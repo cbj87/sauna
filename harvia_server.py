@@ -2,13 +2,13 @@
 Sweat Box — Harvia sauna booking & control server.
 Flask API + static SPA host.
 """
-import json
 import logging
 import os
 from datetime import date, datetime, time, timedelta
 
+import bcrypt
 from apscheduler.schedulers.background import BackgroundScheduler
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, session
 from sqlalchemy.exc import IntegrityError
 
 from harvia_client import HarviaClient
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder="static", static_url_path="")
 app.secret_key = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
+app.permanent_session_lifetime = timedelta(days=30)
 
 HARVIA_USERNAME = os.environ.get("HARVIA_USERNAME", "")
 HARVIA_PASSWORD = os.environ.get("HARVIA_PASSWORD", "")
@@ -30,9 +31,9 @@ HARVIA_DEVICE_ID = os.environ.get("HARVIA_DEVICE_ID", "")
 
 harvia: HarviaClient | None = None
 
-COOLDOWN_MINUTES = 15  # minimum gap between consecutive bookings
-PREHEAT_WINDOW_MINUTES = 90  # allow preheat within this many minutes of start time
-WALKUP_WINDOW_MINUTES = 120  # allow controls if no booking in next N minutes
+COOLDOWN_MINUTES = 15
+PREHEAT_WINDOW_MINUTES = 90
+WALKUP_WINDOW_MINUTES = 120
 
 
 def get_harvia() -> HarviaClient:
@@ -43,25 +44,12 @@ def get_harvia() -> HarviaClient:
 
 
 # ---------------------------------------------------------------------------
-# DB helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+def err(msg: str, code: int = 400):
+    return jsonify({"error": msg}), code
 
-
-def db_session():
-    """Context manager for DB sessions outside Flask request context."""
-    return SessionLocal()
-
-
-# ---------------------------------------------------------------------------
-# Temperature helpers
-# ---------------------------------------------------------------------------
 
 def c_to_f(c: float) -> float:
     return round(c * 9 / 5 + 32, 1)
@@ -72,7 +60,6 @@ def f_to_c(f: float) -> int:
 
 
 def status_with_f(status: dict) -> dict:
-    """Add Fahrenheit equivalents to a status dict."""
     out = dict(status)
     if out.get("targetTemp") is not None:
         out["targetTempF"] = c_to_f(out["targetTemp"])
@@ -81,18 +68,47 @@ def status_with_f(status: dict) -> dict:
     return out
 
 
+def current_member(db):
+    """Return the logged-in FamilyMember or None."""
+    member_id = session.get("member_id")
+    if not member_id:
+        return None
+    return db.query(FamilyMember).filter_by(id=member_id, status="approved").first()
+
+
+def require_auth():
+    """Return (db, member) or raise. Caller must close db."""
+    db = SessionLocal()
+    member = current_member(db)
+    if not member:
+        db.close()
+        return None, None, (jsonify({"error": "Not authenticated"}), 401)
+    return db, member, None
+
+
+def require_admin():
+    """Return (db, member) or error tuple. Caller must close db."""
+    db = SessionLocal()
+    member = current_member(db)
+    if not member:
+        db.close()
+        return None, None, (jsonify({"error": "Not authenticated"}), 401)
+    if not member.is_admin:
+        db.close()
+        return None, None, (jsonify({"error": "Admin access required"}), 403)
+    return db, member, None
+
+
 # ---------------------------------------------------------------------------
-# Background scheduler
+# Background scheduler — auto-shutoff
 # ---------------------------------------------------------------------------
 
 def check_and_auto_shutoff():
-    """Run every 60 s: complete past bookings and turn off the sauna if needed."""
     now = datetime.now()
     today = now.date()
     current_time = now.time()
 
-    with db_session() as db:
-        # Find bookings that ended in the past and are still active/preheating
+    with SessionLocal() as db:
         past_bookings = (
             db.query(Booking)
             .filter(
@@ -102,15 +118,12 @@ def check_and_auto_shutoff():
             )
             .all()
         )
-
         for booking in past_bookings:
             booking.status = "completed"
             logger.info("Auto-completed booking %d", booking.id)
 
         if past_bookings:
             db.commit()
-
-            # Check whether any current or upcoming booking is active
             active_booking = (
                 db.query(Booking)
                 .filter(
@@ -122,7 +135,6 @@ def check_and_auto_shutoff():
                 .first()
             )
             if not active_booking:
-                # No active booking — turn sauna off
                 try:
                     get_harvia().turn_off()
                     logger.info("Auto-shutoff: sauna turned off after booking ended")
@@ -135,19 +147,251 @@ scheduler.add_job(check_and_auto_shutoff, "interval", seconds=60, id="auto_shuto
 
 
 # ---------------------------------------------------------------------------
-# Error helpers
+# Auth routes
 # ---------------------------------------------------------------------------
 
-def err(msg: str, code: int = 400):
-    return jsonify({"error": msg}), code
+@app.route("/api/auth/signup", methods=["POST"])
+def signup():
+    body = request.get_json(silent=True) or {}
+    name = body.get("name", "").strip()
+    pin = str(body.get("pin", "")).strip()
+    color = body.get("color", "#F97316")
+
+    if not name:
+        return err("Name is required")
+    if not pin or len(pin) != 4 or not pin.isdigit():
+        return err("PIN must be exactly 4 digits")
+
+    db = SessionLocal()
+    try:
+        # First-ever signup is auto-approved as admin
+        existing_count = db.query(FamilyMember).count()
+        is_first = existing_count == 0
+
+        pin_hash = bcrypt.hashpw(pin.encode(), bcrypt.gensalt()).decode()
+        member = FamilyMember(
+            name=name,
+            pin_hash=pin_hash,
+            status="approved" if is_first else "pending",
+            is_admin=1 if is_first else 0,
+            color=color,
+        )
+        db.add(member)
+        db.commit()
+        db.refresh(member)
+
+        if is_first:
+            session.permanent = True
+            session["member_id"] = member.id
+            return jsonify({"ok": True, "status": "approved", "member": member.to_dict()}), 201
+
+        return jsonify({"ok": True, "status": "pending"}), 201
+    finally:
+        db.close()
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def login():
+    body = request.get_json(silent=True) or {}
+    member_id = body.get("member_id")
+    pin = str(body.get("pin", "")).strip()
+
+    if not member_id or not pin:
+        return err("member_id and pin are required")
+
+    db = SessionLocal()
+    try:
+        member = db.query(FamilyMember).filter_by(id=int(member_id)).first()
+        if not member or not member.pin_hash:
+            return err("Invalid credentials", 401)
+        if member.status == "pending":
+            return err("Your account is waiting for approval", 403)
+        if member.status == "rejected":
+            return err("Your account request was not approved", 403)
+        if not bcrypt.checkpw(pin.encode(), member.pin_hash.encode()):
+            return err("Invalid credentials", 401)
+
+        session.permanent = True
+        session["member_id"] = member.id
+        return jsonify({"ok": True, "member": member.to_dict()})
+    finally:
+        db.close()
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/me")
+def me():
+    member_id = session.get("member_id")
+    if not member_id:
+        return jsonify({"member": None})
+    db = SessionLocal()
+    try:
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not member:
+            session.clear()
+            return jsonify({"member": None})
+        return jsonify({"member": member.to_dict()})
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
-# Sauna control routes
+# Admin routes
+# ---------------------------------------------------------------------------
+
+@app.route("/api/admin/members")
+def admin_list_members():
+    db, _, error = require_admin()
+    if error:
+        return error
+    try:
+        members = db.query(FamilyMember).order_by(FamilyMember.created_at).all()
+        pending_count = sum(1 for m in members if m.status == "pending")
+        return jsonify({
+            "members": [m.to_dict() for m in members],
+            "pending_count": pending_count,
+        })
+    finally:
+        db.close()
+
+
+@app.route("/api/admin/members/<int:member_id>/approve", methods=["POST"])
+def admin_approve_member(member_id: int):
+    db, _, error = require_admin()
+    if error:
+        return error
+    try:
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not member:
+            return err("Member not found", 404)
+        member.status = "approved"
+        db.commit()
+        return jsonify({"ok": True, "member": member.to_dict()})
+    finally:
+        db.close()
+
+
+@app.route("/api/admin/members/<int:member_id>/reject", methods=["POST"])
+def admin_reject_member(member_id: int):
+    db, _, error = require_admin()
+    if error:
+        return error
+    try:
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not member:
+            return err("Member not found", 404)
+        if member.is_admin:
+            return err("Cannot reject the admin account")
+        member.status = "rejected"
+        db.commit()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
+@app.route("/api/admin/members/<int:member_id>", methods=["PUT"])
+def admin_update_member(member_id: int):
+    db, _, error = require_admin()
+    if error:
+        return error
+    body = request.get_json(silent=True) or {}
+    try:
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not member:
+            return err("Member not found", 404)
+        if "name" in body:
+            member.name = body["name"]
+        if "default_temp" in body:
+            member.default_temp = int(body["default_temp"])
+        if "default_time" in body:
+            member.default_time = int(body["default_time"])
+        if "color" in body:
+            member.color = body["color"]
+        if "is_admin" in body:
+            member.is_admin = 1 if body["is_admin"] else 0
+        db.commit()
+        db.refresh(member)
+        return jsonify({"ok": True, "member": member.to_dict()})
+    finally:
+        db.close()
+
+
+@app.route("/api/admin/members/<int:member_id>", methods=["DELETE"])
+def admin_delete_member(member_id: int):
+    db, admin_member, error = require_admin()
+    if error:
+        return error
+    try:
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not member:
+            return err("Member not found", 404)
+        if member.id == admin_member.id:
+            return err("Cannot delete your own account")
+        db.delete(member)
+        db.commit()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Family member routes (public read, auth-gated write)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/members")
+def list_members():
+    """Returns approved members only — safe to call unauthenticated (login screen needs this)."""
+    db = SessionLocal()
+    try:
+        members = (
+            db.query(FamilyMember)
+            .filter_by(status="approved")
+            .order_by(FamilyMember.id)
+            .all()
+        )
+        return jsonify([m.to_public_dict() for m in members])
+    finally:
+        db.close()
+
+
+@app.route("/api/members/<int:member_id>", methods=["PUT"])
+def update_own_member(member_id: int):
+    """Authenticated users can update their own preferences."""
+    db, member, error = require_auth()
+    if error:
+        return error
+    body = request.get_json(silent=True) or {}
+    try:
+        if member.id != member_id and not member.is_admin:
+            return err("Cannot update another member's profile", 403)
+        target = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not target:
+            return err("Member not found", 404)
+        if "default_temp" in body:
+            target.default_temp = int(body["default_temp"])
+        if "default_time" in body:
+            target.default_time = int(body["default_time"])
+        if "color" in body:
+            target.color = body["color"]
+        db.commit()
+        db.refresh(target)
+        return jsonify(target.to_dict())
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Sauna control routes (require auth)
 # ---------------------------------------------------------------------------
 
 @app.route("/api/sauna/status")
 def sauna_status():
+    # Status is readable without auth (shown on login screen too)
     try:
         status = get_harvia().get_full_status()
         return jsonify(status_with_f(status))
@@ -158,20 +402,21 @@ def sauna_status():
 
 @app.route("/api/sauna/on", methods=["POST"])
 def sauna_on():
+    _, _, error = require_auth()
+    if error:
+        return error
     body = request.get_json(silent=True) or {}
     target_f = body.get("targetTempF")
     target_c = body.get("targetTemp")
     if target_f is not None:
         target_c = f_to_c(float(target_f))
     elif target_c is None:
-        target_c = 90  # default
-
+        target_c = 90
     target_c = max(40, min(110, int(target_c)))
     on_time = int(body.get("onTime", 60))
-
     try:
         get_harvia().turn_on(target_c, on_time)
-        return jsonify({"ok": True, "targetTemp": target_c, "onTime": on_time})
+        return jsonify({"ok": True, "targetTemp": target_c, "targetTempF": c_to_f(target_c), "onTime": on_time})
     except Exception as exc:
         logger.error("Turn on failed: %s", exc)
         return err(str(exc), 502)
@@ -179,6 +424,9 @@ def sauna_on():
 
 @app.route("/api/sauna/off", methods=["POST"])
 def sauna_off():
+    _, _, error = require_auth()
+    if error:
+        return error
     try:
         get_harvia().turn_off()
         return jsonify({"ok": True})
@@ -189,20 +437,18 @@ def sauna_off():
 
 @app.route("/api/sauna/set", methods=["POST"])
 def sauna_set():
+    _, _, error = require_auth()
+    if error:
+        return error
     body = request.get_json(silent=True) or {}
     allowed = {"active", "targetTemp", "onTime", "maxOnTime", "maxTemp", "light", "fan", "steamEn", "targetRh"}
     payload = {k: v for k, v in body.items() if k in allowed}
-
-    # Convert °F targetTemp if provided as targetTempF
     if "targetTempF" in body and "targetTemp" not in payload:
         payload["targetTemp"] = f_to_c(float(body["targetTempF"]))
-
     if "targetTemp" in payload:
         payload["targetTemp"] = max(40, min(110, int(payload["targetTemp"])))
-
     if not payload:
         return err("No valid fields provided")
-
     try:
         get_harvia().set_state(payload)
         return jsonify({"ok": True, "applied": payload})
@@ -238,10 +484,12 @@ def list_presets():
 
 @app.route("/api/sauna/preset/<name>", methods=["POST"])
 def apply_preset(name: str):
+    _, _, error = require_auth()
+    if error:
+        return error
     if name not in PRESETS:
         return err(f"Unknown preset '{name}'", 404)
-    payload = dict(PRESETS[name])
-    payload["active"] = 1
+    payload = {**PRESETS[name], "active": 1}
     try:
         get_harvia().set_state(payload)
         return jsonify({"ok": True, "preset": name, "applied": payload})
@@ -251,7 +499,7 @@ def apply_preset(name: str):
 
 
 # ---------------------------------------------------------------------------
-# Booking routes
+# Booking routes (require auth)
 # ---------------------------------------------------------------------------
 
 @app.route("/api/bookings")
@@ -274,8 +522,13 @@ def list_bookings():
 
 @app.route("/api/bookings", methods=["POST"])
 def create_booking():
+    db_auth, member, error = require_auth()
+    if error:
+        return error
+    db_auth.close()
+
     body = request.get_json(silent=True) or {}
-    required = ("member_id", "date", "start_time", "end_time")
+    required = ("date", "start_time", "end_time")
     for field in required:
         if field not in body:
             return err(f"Missing field: {field}")
@@ -303,12 +556,6 @@ def create_booking():
 
     db = SessionLocal()
     try:
-        # Verify member exists
-        member = db.query(FamilyMember).filter_by(id=int(body["member_id"])).first()
-        if not member:
-            return err("Member not found", 404)
-
-        # Check for overlapping bookings (including cooldown)
         cooldown_start = (
             datetime.combine(booking_date, start) - timedelta(minutes=COOLDOWN_MINUTES)
         ).time()
@@ -333,7 +580,7 @@ def create_booking():
             )
 
         booking = Booking(
-            member_id=int(body["member_id"]),
+            member_id=member.id,
             date=booking_date,
             start_time=start,
             end_time=end,
@@ -354,12 +601,19 @@ def create_booking():
 
 @app.route("/api/bookings/<int:booking_id>", methods=["DELETE"])
 def cancel_booking(booking_id: int):
+    db_auth, member, error = require_auth()
+    if error:
+        return error
+    db_auth.close()
+
     db = SessionLocal()
     try:
         booking = db.query(Booking).filter_by(id=booking_id).first()
         if not booking:
             return err("Booking not found", 404)
-        if booking.status in ("completed",):
+        if booking.member_id != member.id and not member.is_admin:
+            return err("Cannot cancel someone else's booking", 403)
+        if booking.status == "completed":
             return err("Cannot cancel a completed booking")
         booking.status = "cancelled"
         db.commit()
@@ -370,12 +624,19 @@ def cancel_booking(booking_id: int):
 
 @app.route("/api/bookings/<int:booking_id>/preheat", methods=["POST"])
 def preheat_booking(booking_id: int):
+    db_auth, member, error = require_auth()
+    if error:
+        return error
+    db_auth.close()
+
     db = SessionLocal()
     try:
         booking = db.query(Booking).filter_by(id=booking_id).first()
         if not booking:
             return err("Booking not found", 404)
-        if booking.status not in ("scheduled",):
+        if booking.member_id != member.id and not member.is_admin:
+            return err("Cannot preheat someone else's booking", 403)
+        if booking.status != "scheduled":
             return err(f"Cannot preheat a booking with status '{booking.status}'")
 
         now = datetime.now()
@@ -384,17 +645,14 @@ def preheat_booking(booking_id: int):
 
         if minutes_until > PREHEAT_WINDOW_MINUTES:
             return err(
-                f"Too early to preheat — booking starts in {int(minutes_until)} min "
+                f"Too early — booking starts in {int(minutes_until)} min "
                 f"(preheat window is {PREHEAT_WINDOW_MINUTES} min)"
             )
         if minutes_until < -5:
-            return err("Booking has already started or passed")
+            return err("Booking has already passed")
 
         try:
-            get_harvia().turn_on(
-                booking.target_temp or 90,
-                booking.on_time or 60,
-            )
+            get_harvia().turn_on(booking.target_temp or 90, booking.on_time or 60)
         except Exception as exc:
             logger.error("Preheat API call failed: %s", exc)
             return err(f"Harvia API error: {exc}", 502)
@@ -402,82 +660,6 @@ def preheat_booking(booking_id: int):
         booking.status = "preheating"
         db.commit()
         return jsonify({"ok": True, "status": "preheating"})
-    finally:
-        db.close()
-
-
-# ---------------------------------------------------------------------------
-# Family member routes
-# ---------------------------------------------------------------------------
-
-@app.route("/api/members")
-def list_members():
-    db = SessionLocal()
-    try:
-        members = db.query(FamilyMember).order_by(FamilyMember.id).all()
-        return jsonify([m.to_dict() for m in members])
-    finally:
-        db.close()
-
-
-@app.route("/api/members", methods=["POST"])
-def create_member():
-    body = request.get_json(silent=True) or {}
-    if not body.get("name"):
-        return err("Missing field: name")
-
-    db = SessionLocal()
-    try:
-        member = FamilyMember(
-            name=body["name"],
-            default_temp=int(body.get("default_temp", 90)),
-            default_time=int(body.get("default_time", 60)),
-            color=body.get("color", "#F97316"),
-        )
-        db.add(member)
-        db.commit()
-        db.refresh(member)
-        return jsonify(member.to_dict()), 201
-    except IntegrityError:
-        db.rollback()
-        return err("Database error creating member", 500)
-    finally:
-        db.close()
-
-
-@app.route("/api/members/<int:member_id>", methods=["PUT"])
-def update_member(member_id: int):
-    body = request.get_json(silent=True) or {}
-    db = SessionLocal()
-    try:
-        member = db.query(FamilyMember).filter_by(id=member_id).first()
-        if not member:
-            return err("Member not found", 404)
-        if "name" in body:
-            member.name = body["name"]
-        if "default_temp" in body:
-            member.default_temp = int(body["default_temp"])
-        if "default_time" in body:
-            member.default_time = int(body["default_time"])
-        if "color" in body:
-            member.color = body["color"]
-        db.commit()
-        db.refresh(member)
-        return jsonify(member.to_dict())
-    finally:
-        db.close()
-
-
-@app.route("/api/members/<int:member_id>", methods=["DELETE"])
-def delete_member(member_id: int):
-    db = SessionLocal()
-    try:
-        member = db.query(FamilyMember).filter_by(id=member_id).first()
-        if not member:
-            return err("Member not found", 404)
-        db.delete(member)
-        db.commit()
-        return jsonify({"ok": True})
     finally:
         db.close()
 
@@ -501,11 +683,9 @@ def serve_spa(path):
 def _startup():
     global harvia
 
-    # Initialise DB
     init_db()
     logger.info("Database initialised at %s", DB_PATH)
 
-    # Initialise Harvia client
     if HARVIA_USERNAME and HARVIA_PASSWORD and HARVIA_DEVICE_ID:
         harvia = HarviaClient(HARVIA_USERNAME, HARVIA_PASSWORD, HARVIA_DEVICE_ID)
         try:
@@ -517,7 +697,6 @@ def _startup():
     else:
         logger.warning("Harvia credentials not configured — sauna control disabled")
 
-    # Start background scheduler (guard against double-start in debug reloader)
     if not scheduler.running:
         scheduler.start()
         logger.info("Background scheduler started")

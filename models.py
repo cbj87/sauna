@@ -22,7 +22,7 @@ if not os.path.exists("/data"):
 
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 
-# Enable WAL mode for better concurrent access
+
 @event.listens_for(engine, "connect")
 def set_sqlite_pragma(dbapi_connection, _connection_record):
     cursor = dbapi_connection.cursor()
@@ -43,9 +43,14 @@ class FamilyMember(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, nullable=False)
+    pin_hash = Column(String, nullable=True)
+    # pending | approved | rejected
+    status = Column(String, default="pending")
+    is_admin = Column(Integer, default=0)
     default_temp = Column(Integer, default=90)   # °C
     default_time = Column(Integer, default=60)   # minutes
-    color = Column(String, default="#F97316")    # hex color
+    color = Column(String, default="#F97316")    # hex color for calendar display
+    created_at = Column(DateTime, default=datetime.utcnow)
 
     bookings = relationship("Booking", back_populates="member", cascade="all, delete-orphan")
 
@@ -53,8 +58,19 @@ class FamilyMember(Base):
         return {
             "id": self.id,
             "name": self.name,
+            "status": self.status,
+            "is_admin": bool(self.is_admin),
             "default_temp": self.default_temp,
             "default_time": self.default_time,
+            "color": self.color,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+    def to_public_dict(self) -> dict:
+        """Minimal dict safe to return to unauthenticated callers (login screen)."""
+        return {
+            "id": self.id,
+            "name": self.name,
             "color": self.color,
         }
 
@@ -69,7 +85,8 @@ class Booking(Base):
     end_time = Column(Time, nullable=False)
     target_temp = Column(Integer)   # °C
     on_time = Column(Integer)       # minutes
-    status = Column(String, default="scheduled")  # scheduled | preheating | active | completed | cancelled
+    # scheduled | preheating | active | completed | cancelled
+    status = Column(String, default="scheduled")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     member = relationship("FamilyMember", back_populates="bookings")
