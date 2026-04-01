@@ -67,11 +67,13 @@ class FamilyMember(Base):
         }
 
     def to_public_dict(self) -> dict:
-        """Minimal dict safe to return to unauthenticated callers (login screen)."""
+        """Dict safe to return to unauthenticated callers (login screen)."""
         return {
             "id": self.id,
             "name": self.name,
             "color": self.color,
+            "default_temp": self.default_temp,
+            "default_time": self.default_time,
         }
 
 

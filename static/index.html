@@ -420,7 +420,7 @@ function MembersPanel({ members, onReload, currentMember }) {
 }
 
 // ─── controls ────────────────────────────────────────────────────────────────
-function Controls({ status, bookings, members, onRefresh, toast }) {
+function Controls({ status, bookings, members, currentMember, onRefresh, toast }) {
   const now = new Date();
   const todayStr = now.toISOString().slice(0,10);
 
@@ -443,8 +443,9 @@ function Controls({ status, bookings, members, onRefresh, toast }) {
 
   const unlocked = relevantBookings.length > 0 || upcomingIn2h.length === 0;
 
-  const defaultTemp = relevantBookings[0]?.target_temp ?? 90;
-  const defaultDur  = relevantBookings[0]?.on_time ?? 60;
+  // Preference priority: active/upcoming booking → logged-in user's saved prefs → sensible fallback
+  const defaultTemp = relevantBookings[0]?.target_temp ?? currentMember?.default_temp ?? 90;
+  const defaultDur  = relevantBookings[0]?.on_time    ?? currentMember?.default_time  ?? 60;
 
   const [tempF, setTempF] = useState(cToF(defaultTemp));
   const [duration, setDuration] = useState(defaultDur);
@@ -1021,7 +1022,7 @@ function MainApp({ currentMember, onLogout }) {
         )}
 
         {tab === 'controls' && (
-          <Controls status={status} bookings={bookings} members={members} onRefresh={loadStatus} toast={toast} />
+          <Controls status={status} bookings={bookings} members={members} currentMember={currentMember} onRefresh={loadStatus} toast={toast} />
         )}
 
         {tab === 'members' && (
