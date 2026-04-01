@@ -157,7 +157,7 @@ function Timeline({ bookings, members, onSlotClick, onEmptyClick, selectedMember
 }
 
 // ─── booking modal ────────────────────────────────────────────────────────────
-function BookingModal({ defaultTime, members, onClose, onSave }) {
+function BookingModal({ defaultTime, defaultDate, members, onClose, onSave }) {
   const now = new Date();
   const [memberId, setMemberId] = useState(members[0]?.id || '');
   const [startTime, setStartTime] = useState(defaultTime || timeStr(now));
@@ -175,7 +175,7 @@ function BookingModal({ defaultTime, members, onClose, onSave }) {
   async function handleSave() {
     await onSave({
       member_id: Number(memberId),
-      date: now.toISOString().slice(0,10),
+      date: defaultDate || now.toISOString().slice(0,10),
       start_time: startTime,
       end_time: endTime,
       target_temp: fToC(tempF),
@@ -777,6 +777,7 @@ function MainApp({ currentMember, onLogout }) {
   const statusRef = useRef(null);
 
   const today = new Date().toISOString().slice(0,10);
+  const [viewDate, setViewDate] = useState(today);
 
   async function loadStatus() {
     try {
@@ -787,12 +788,14 @@ function MainApp({ currentMember, onLogout }) {
     }
   }
 
-  async function loadBookings() {
+  async function loadBookings(date = viewDate) {
     try {
-      const b = await api(`/api/bookings?date=${today}`);
+      const b = await api(`/api/bookings?date=${date}`);
       setBookings(b);
     } catch {}
   }
+
+  useEffect(() => { loadBookings(viewDate); }, [viewDate]);
 
   async function loadMembers() {
     try {
@@ -899,11 +902,27 @@ function MainApp({ currentMember, onLogout }) {
         {tab === 'today' && (
           <>
             <div>
+              {/* 7-day selector */}
+              <div className="flex gap-2 overflow-x-auto pb-1 mb-3 scrollbar-hide">
+                {Array.from({length: 7}, (_, i) => {
+                  const d = new Date(); d.setDate(d.getDate() + i);
+                  const iso = d.toISOString().slice(0,10);
+                  const isToday = i === 0;
+                  const active = viewDate === iso;
+                  return (
+                    <button key={iso} onClick={() => setViewDate(iso)}
+                      className={`flex-shrink-0 flex flex-col items-center px-3 py-2 rounded-xl text-xs font-semibold transition-all ${active ? 'bg-orange-500 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+                      <span className="uppercase tracking-wide text-[10px]">{isToday ? 'Today' : d.toLocaleDateString('en-US',{weekday:'short'})}</span>
+                      <span className="text-base font-black leading-tight">{d.getDate()}</span>
+                    </button>
+                  );
+                })}
+              </div>
               <div className="flex justify-between items-center mb-3">
                 <h2 className="font-bold text-base">
-                  {new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}
+                  {new Date(viewDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}
                 </h2>
-                <button onClick={loadBookings} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
+                <button onClick={() => loadBookings(viewDate)} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
               </div>
               <Timeline
                 bookings={bookings}
@@ -973,6 +992,7 @@ function MainApp({ currentMember, onLogout }) {
       {showBookModal && (
         <BookingModal
           defaultTime={bookDefaultTime}
+          defaultDate={viewDate}
           members={members}
           onClose={()=>setShowBookModal(false)}
           onSave={handleCreateBooking}
