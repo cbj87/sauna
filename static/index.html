@@ -424,8 +424,11 @@ function Controls({ status, bookings, members, currentMember, onRefresh, toast }
   const now = new Date();
   const todayStr = now.toISOString().slice(0,10);
 
-  // Active/upcoming bookings within 90 min
+  const isAdmin = currentMember?.is_admin;
+
+  // Only this user's bookings that are active or starting within 90 min
   const relevantBookings = bookings.filter(b => {
+    if (b.member_id !== currentMember?.id) return false;
     if (b.date !== todayStr) return false;
     if (b.status === 'cancelled' || b.status === 'completed') return false;
     const start = new Date(`${b.date}T${b.start_time}`);
@@ -433,15 +436,8 @@ function Controls({ status, bookings, members, currentMember, onRefresh, toast }
     return end > now && (start - now) / 60000 <= 90;
   });
 
-  // Walk-up: no booking in next 2 hours
-  const upcomingIn2h = bookings.filter(b => {
-    if (b.date !== todayStr) return false;
-    if (b.status === 'cancelled' || b.status === 'completed') return false;
-    const start = new Date(`${b.date}T${b.start_time}`);
-    return (start - now) / 60000 <= 120 && start > now;
-  });
-
-  const unlocked = relevantBookings.length > 0 || upcomingIn2h.length === 0;
+  // Admins always unlocked; others need their own booking within 90 min
+  const unlocked = isAdmin || relevantBookings.length > 0;
 
   // Preference priority: active/upcoming booking → logged-in user's saved prefs → sensible fallback
   const defaultTemp = relevantBookings[0]?.target_temp ?? currentMember?.default_temp ?? 90;
@@ -486,7 +482,7 @@ function Controls({ status, bookings, members, currentMember, onRefresh, toast }
     <div className={`bg-gray-800 rounded-2xl p-5 transition-opacity ${!unlocked?'opacity-50 pointer-events-none':''}`}>
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-bold text-base">Sauna Controls</h2>
-        {!unlocked && <span className="text-xs bg-gray-700 text-gray-400 px-3 py-1 rounded-full">Locked — no upcoming booking</span>}
+        {!unlocked && <span className="text-xs bg-gray-700 text-gray-400 px-3 py-1 rounded-full">🔒 Book a session to unlock</span>}
       </div>
 
       {/* live readings */}
@@ -762,6 +758,14 @@ function AdminPanel({ currentMember }) {
     finally { setBusy(false); }
   }
 
+  async function toggleAdmin(id, makeAdmin) {
+    if (!confirm(makeAdmin ? 'Make this member an admin?' : 'Remove admin privileges?')) return;
+    setBusy(true);
+    try { await api(`/api/admin/members/${id}`, {method:'PUT', body:{is_admin: makeAdmin}}); await load(); }
+    catch(e) { alert(e.message); }
+    finally { setBusy(false); }
+  }
+
   if (!data) return <div className="text-center text-gray-500 py-8 pulse">Loading…</div>;
 
   const pending = data.members.filter(m => m.status === 'pending');
@@ -811,8 +815,14 @@ function AdminPanel({ currentMember }) {
                 </div>
               </div>
               {m.id !== currentMember.id && (
-                <button onClick={() => reject(m.id)} disabled={busy}
-                  className="text-gray-600 hover:text-red-400 text-lg leading-none disabled:opacity-50">×</button>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => toggleAdmin(m.id, !m.is_admin)} disabled={busy}
+                    className={`text-xs font-semibold px-2 py-1 rounded-lg transition-colors disabled:opacity-50 ${m.is_admin ? 'text-orange-400 hover:bg-orange-900/40' : 'text-gray-500 hover:text-orange-400 hover:bg-gray-700'}`}>
+                    {m.is_admin ? 'admin ✓' : 'make admin'}
+                  </button>
+                  <button onClick={() => reject(m.id)} disabled={busy}
+                    className="text-gray-600 hover:text-red-400 text-lg leading-none disabled:opacity-50">×</button>
+                </div>
               )}
             </div>
           ))}
