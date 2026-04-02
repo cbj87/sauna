@@ -439,12 +439,34 @@ function Controls({ status, bookings, members, currentMember, onRefresh, toast }
   // Admins always unlocked; others need their own booking within 90 min
   const unlocked = isAdmin || relevantBookings.length > 0;
 
-  // Preference priority: active/upcoming booking → logged-in user's saved prefs → sensible fallback
-  const defaultTemp = relevantBookings[0]?.target_temp ?? currentMember?.default_temp ?? 90;
-  const defaultDur  = relevantBookings[0]?.on_time    ?? currentMember?.default_time  ?? 60;
+  // Live member profile (always up-to-date from the members list)
+  const myProfile = members.find(m => m.id === currentMember?.id);
 
-  const [tempF, setTempF] = useState(cToF(defaultTemp));
-  const [duration, setDuration] = useState(defaultDur);
+  // Seed state from booking → live profile → auth session → hardcoded fallback
+  const seedTemp = relevantBookings[0]?.target_temp ?? myProfile?.default_temp ?? currentMember?.default_temp ?? 90;
+  const seedDur  = relevantBookings[0]?.on_time    ?? myProfile?.default_time  ?? currentMember?.default_time  ?? 60;
+
+  const [tempF, setTempF] = useState(cToF(seedTemp));
+  const [duration, setDuration] = useState(seedDur);
+
+  // Re-sync defaults when members finish loading (or preferences change),
+  // but only if the user hasn't manually adjusted the sliders.
+  const [manuallySet, setManuallySet] = useState(false);
+  useEffect(() => {
+    if (manuallySet || !myProfile) return;
+    if (relevantBookings.length === 0) {
+      setTempF(cToF(myProfile.default_temp));
+      setDuration(myProfile.default_time);
+    }
+  }, [myProfile?.default_temp, myProfile?.default_time]);
+
+  // Poll status every 2 minutes while this tab is visible and unlocked
+  useEffect(() => {
+    if (!unlocked) return;
+    onRefresh();
+    const interval = setInterval(onRefresh, 120000);
+    return () => clearInterval(interval);
+  }, [unlocked]);
   const [loading, setLoading] = useState(false);
 
   const sauna_on = status?.active === 1;
@@ -518,7 +540,7 @@ function Controls({ status, bookings, members, currentMember, onRefresh, toast }
           <span className="font-bold text-orange-400">{tempF}°F <span className="text-gray-500 font-normal">({fToC(tempF)}°C)</span></span>
         </div>
         <input type="range" min={104} max={230} step={2} value={tempF}
-          onChange={e=>setTempF(Number(e.target.value))} className="w-full h-3" />
+          onChange={e=>{ setManuallySet(true); setTempF(Number(e.target.value)); }} className="w-full h-3" />
         <div className="flex justify-between text-xs text-gray-600 mt-1"><span>104°F</span><span>230°F</span></div>
       </div>
 
@@ -527,7 +549,7 @@ function Controls({ status, bookings, members, currentMember, onRefresh, toast }
         <div className="text-sm text-gray-400 mb-2">Duration</div>
         <div className="flex gap-2">
           {[30,60,90,120].map(d=>(
-            <button key={d} onClick={()=>setDuration(d)}
+            <button key={d} onClick={()=>{ setManuallySet(true); setDuration(d); }}
               className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-all ${duration===d?'bg-orange-500 text-white':'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{d}m</button>
           ))}
         </div>
@@ -882,11 +904,10 @@ function MainApp({ currentMember, onLogout }) {
   }
 
   useEffect(() => {
-    loadStatus();
     loadBookings();
     loadMembers();
     loadPendingCount();
-    const interval = setInterval(() => { loadStatus(); loadPendingCount(); }, 30000);
+    const interval = setInterval(loadPendingCount, 120000);
     return () => clearInterval(interval);
   }, []);
 
