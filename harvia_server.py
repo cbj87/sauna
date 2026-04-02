@@ -51,11 +51,13 @@ def err(msg: str, code: int = 400):
     return jsonify({"error": msg}), code
 
 
-def c_to_f(c: float) -> float:
-    return round(c * 9 / 5 + 32, 1)
+def c_to_f(c: float) -> int:
+    """Convert °C to °F, rounded to nearest integer."""
+    return round(c * 9 / 5 + 32)
 
 
 def f_to_c(f: float) -> int:
+    """Convert °F to °C, rounded to nearest integer (Harvia API expects whole °C)."""
     return round((f - 32) * 5 / 9)
 
 
@@ -199,9 +201,14 @@ def login():
     if not member_id or not pin:
         return err("member_id and pin are required")
 
+    try:
+        member_id = int(member_id)
+    except (ValueError, TypeError):
+        return err("Invalid member_id", 400)
+
     db = SessionLocal()
     try:
-        member = db.query(FamilyMember).filter_by(id=int(member_id)).first()
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
         if not member or not member.pin_hash:
             return err("Invalid credentials", 401)
         if member.status == "pending":
@@ -256,6 +263,35 @@ def admin_list_members():
             "members": [m.to_dict() for m in members],
             "pending_count": pending_count,
         })
+    finally:
+        db.close()
+
+
+@app.route("/api/admin/members", methods=["POST"])
+def admin_create_member():
+    db, _, error = require_admin()
+    if error:
+        return error
+    body = request.get_json(silent=True) or {}
+    name = body.get("name", "").strip()
+    color = body.get("color", "#F97316")
+    default_temp = body.get("default_temp", 90)
+    default_time = body.get("default_time", 60)
+    if not name:
+        return err("Name is required")
+    try:
+        member = FamilyMember(
+            name=name,
+            color=color,
+            default_temp=int(default_temp),
+            default_time=int(default_time),
+            status="approved",
+            is_admin=0,
+        )
+        db.add(member)
+        db.commit()
+        db.refresh(member)
+        return jsonify(member.to_dict()), 201
     finally:
         db.close()
 
@@ -648,7 +684,7 @@ def preheat_booking(booking_id: int):
                 f"Too early — booking starts in {int(minutes_until)} min "
                 f"(preheat window is {PREHEAT_WINDOW_MINUTES} min)"
             )
-        if minutes_until < -5:
+        if minutes_until < 0:
             return err("Booking has already passed")
 
         try:

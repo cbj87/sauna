@@ -4,13 +4,13 @@
 
 ## 🐛 Bug Fixes
 
-- [ ] **Add member endpoint is wrong** — `MembersPanel` calls `POST /api/members` but that route doesn't exist; it should call `POST /api/admin/members`
-- [ ] **Controls default duration doesn't reflect saved prefs on first login** — `useState` only seeds once; if members haven't loaded yet it falls back to the stale auth-session value from login time
-- [ ] **Temperature conversion round-trip loses precision** — `f_to_c()` returns `int`, `c_to_f()` returns `float`; values can drift ±1–2° through repeated conversions
-- [ ] **Login crashes with 500 if member_id is not an integer** — `int(member_id)` in the login route has no `ValueError` catch; should return a clean 400 instead
-- [ ] **Preheat window allows triggering 5 min after session start** — `minutes_until < -5` guard is likely unintentional; should be `< 0`
-- [ ] **Status display missing target temp** — Controls live-readings panel shows current temp and remaining time but not what temp the sauna is set to heat *to*
-- [ ] **Status pill goes stale on non-Controls tabs** — status is no longer polled globally so the header pill stays frozen unless you visit the Controls tab
+- [x] **Add member endpoint is wrong** — `MembersPanel` calls `POST /api/members` but that route doesn't exist; it should call `POST /api/admin/members`
+- [x] **Controls default duration doesn't reflect saved prefs on first login** — `useState` only seeds once; if members haven't loaded yet it falls back to the stale auth-session value from login time
+- [x] **Temperature conversion round-trip loses precision** — `f_to_c()` returns `int`, `c_to_f()` returns `float`; values can drift ±1–2° through repeated conversions
+- [x] **Login crashes with 500 if member_id is not an integer** — `int(member_id)` in the login route has no `ValueError` catch; should return a clean 400 instead
+- [x] **Preheat window allows triggering 5 min after session start** — `minutes_until < -5` guard is likely unintentional; should be `< 0`
+- [x] **Status display missing target temp** — Controls live-readings panel shows current temp and remaining time but not what temp the sauna is set to heat *to*
+- [x] **Status pill goes stale on non-Controls tabs** — status is no longer polled globally so the header pill stays frozen unless you visit the Controls tab
 
 ---
 
