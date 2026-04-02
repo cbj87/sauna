@@ -2,8 +2,10 @@
 Sweat Box — Harvia sauna booking & control server.
 Flask API + static SPA host.
 """
+import collections
 import logging
 import os
+import threading
 from datetime import date, datetime, time, timedelta
 
 import bcrypt
@@ -22,7 +24,19 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 app = Flask(__name__, static_folder="static", static_url_path="")
-app.secret_key = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
+
+_secret_key = os.environ.get("APP_SECRET_KEY", "dev-secret-change-me")
+if _secret_key == "dev-secret-change-me":
+    import sys
+    if os.environ.get("FLASK_ENV") == "production" or os.environ.get("RAILWAY_ENVIRONMENT"):
+        logger.critical(
+            "APP_SECRET_KEY is still the default dev value — refusing to start in production. "
+            "Set a long random string in your environment variables."
+        )
+        sys.exit(1)
+    else:
+        logger.warning("APP_SECRET_KEY is using the insecure default. Set it before deploying.")
+app.secret_key = _secret_key
 app.permanent_session_lifetime = timedelta(days=30)
 
 HARVIA_USERNAME = os.environ.get("HARVIA_USERNAME", "")
@@ -34,6 +48,43 @@ harvia: HarviaClient | None = None
 COOLDOWN_MINUTES = 15
 PREHEAT_WINDOW_MINUTES = 90
 WALKUP_WINDOW_MINUTES = 120
+
+# ---------------------------------------------------------------------------
+# Login rate limiting (in-memory, per IP)
+# ---------------------------------------------------------------------------
+LOGIN_MAX_ATTEMPTS = 10        # max failures before lockout
+LOGIN_WINDOW_SECONDS = 900     # 15-minute sliding window
+LOGIN_LOCKOUT_SECONDS = 900    # lockout duration after max failures
+
+_login_attempts: dict[str, list[float]] = collections.defaultdict(list)
+_login_lock = threading.Lock()
+
+
+def _get_client_ip() -> str:
+    return request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+
+
+def _check_rate_limit(ip: str) -> bool:
+    """Return True if the IP is currently locked out."""
+    now = datetime.now().timestamp()
+    with _login_lock:
+        attempts = _login_attempts[ip]
+        # Discard attempts outside the window
+        _login_attempts[ip] = [t for t in attempts if now - t < LOGIN_WINDOW_SECONDS]
+        return len(_login_attempts[ip]) >= LOGIN_MAX_ATTEMPTS
+
+
+def _record_failed_attempt(ip: str) -> int:
+    """Record a failed login and return the remaining attempts before lockout."""
+    now = datetime.now().timestamp()
+    with _login_lock:
+        _login_attempts[ip].append(now)
+        return max(0, LOGIN_MAX_ATTEMPTS - len(_login_attempts[ip]))
+
+
+def _clear_attempts(ip: str) -> None:
+    with _login_lock:
+        _login_attempts.pop(ip, None)
 
 
 def get_harvia() -> HarviaClient:
@@ -194,6 +245,11 @@ def signup():
 
 @app.route("/api/auth/login", methods=["POST"])
 def login():
+    ip = _get_client_ip()
+    if _check_rate_limit(ip):
+        logger.warning("Login rate limit hit for IP %s", ip)
+        return err("Too many failed attempts — please wait 15 minutes before trying again.", 429)
+
     body = request.get_json(silent=True) or {}
     member_id = body.get("member_id")
     pin = str(body.get("pin", "")).strip()
@@ -210,14 +266,20 @@ def login():
     try:
         member = db.query(FamilyMember).filter_by(id=member_id).first()
         if not member or not member.pin_hash:
+            _record_failed_attempt(ip)
             return err("Invalid credentials", 401)
         if member.status == "pending":
             return err("Your account is waiting for approval", 403)
         if member.status == "rejected":
             return err("Your account request was not approved", 403)
         if not bcrypt.checkpw(pin.encode(), member.pin_hash.encode()):
-            return err("Invalid credentials", 401)
+            remaining = _record_failed_attempt(ip)
+            msg = "Invalid PIN"
+            if remaining <= 3:
+                msg += f" — {remaining} attempt{'s' if remaining != 1 else ''} remaining before lockout"
+            return err(msg, 401)
 
+        _clear_attempts(ip)
         session.permanent = True
         session["member_id"] = member.id
         return jsonify({"ok": True, "member": member.to_dict()})

@@ -55,16 +55,16 @@
 
 ## 🔒 Security
 
-- [ ] **Rate-limit login attempts** — 4-digit PINs have only 10,000 combinations; a simple per-IP attempt counter would stop brute force
+- [x] **Rate-limit login attempts** — 4-digit PINs have only 10,000 combinations; a simple per-IP attempt counter would stop brute force
 - [ ] **CSRF protection** — Flask sessions are in use but no CSRF token is checked on mutating POST/DELETE routes
 - [ ] **Re-authenticate for destructive actions** — require PIN confirmation before deleting a member or removing admin privileges
-- [ ] **Harden default secret key** — warn loudly (or refuse to start) if `APP_SECRET_KEY` is still the default `dev-secret-change-me`
+- [x] **Harden default secret key** — warn loudly (or refuse to start) if `APP_SECRET_KEY` is still the default `dev-secret-change-me`
 
 ---
 
 ## 🚀 Other / Infrastructure
 
-- [ ] **Railway volume for DB persistence** — add a `/data` volume in Railway and set `DB_PATH=/data/sweatbox.db` in env vars so members and bookings survive redeploys (see `.env.example`)
+- [x] **Railway volume for DB persistence** — add a `/data` volume in Railway and set `DB_PATH=/data/sweatbox.db` in env vars so members and bookings survive redeploys (see `.env.example`)
 - [ ] **Favicon** — add a small sauna emoji favicon so the browser tab looks good
 - [ ] **PWA manifest** — add a `manifest.json` and service worker so the app can be "Add to Home Screen" on iOS/Android
 - [ ] **Error boundary** — wrap the React app in an error boundary so a JS crash shows a friendly message instead of a blank screen
