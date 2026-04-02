@@ -250,7 +250,7 @@ function SlotModal({ booking, onClose, onCancel, onPreheat }) {
   const now = new Date();
   const bookingStart = new Date(`${booking.date}T${booking.start_time}`);
   const minsUntil = (bookingStart - now) / 60000;
-  const canPreheat = booking.status === 'scheduled' && minsUntil <= 90 && minsUntil > -5;
+  const canPreheat = booking.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0;
   const color = booking.member_color || '#f97316';
 
   return (
@@ -1046,9 +1046,10 @@ function MainApp({ currentMember, onLogout }) {
                         <div className="text-xs text-gray-400">{b.start_time}–{b.end_time} · {cToF(b.target_temp)}°F</div>
                       </div>
                       <span className={`text-xs px-2 py-0.5 rounded-full font-semibold capitalize
-                        ${b.status==='preheating'?'bg-orange-900 text-orange-300':
-                          b.status==='active'?'bg-green-900 text-green-300':
+                        ${b.status==='active'?'bg-green-800 text-green-300 pulse':
+                          b.status==='preheating'?'bg-orange-900 text-orange-300 pulse':
                           b.status==='completed'?'bg-gray-700 text-gray-400':
+                          b.status==='cancelled'?'bg-red-950 text-red-400':
                           'bg-gray-700 text-gray-400'}`}>
                         {b.status}
                       </span>

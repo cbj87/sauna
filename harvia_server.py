@@ -162,6 +162,22 @@ def check_and_auto_shutoff():
     current_time = now.time()
 
     with SessionLocal() as db:
+        # Mark in-progress bookings as active (start has passed, end hasn't yet)
+        newly_active = (
+            db.query(Booking)
+            .filter(
+                Booking.date == today,
+                Booking.start_time <= current_time,
+                Booking.end_time > current_time,
+                Booking.status.in_(["scheduled", "preheating"]),
+            )
+            .all()
+        )
+        for booking in newly_active:
+            booking.status = "active"
+            logger.info("Booking %d is now active", booking.id)
+
+        # Mark finished bookings as completed (end time has passed)
         past_bookings = (
             db.query(Booking)
             .filter(
@@ -175,19 +191,22 @@ def check_and_auto_shutoff():
             booking.status = "completed"
             logger.info("Auto-completed booking %d", booking.id)
 
-        if past_bookings:
+        if newly_active or past_bookings:
             db.commit()
-            active_booking = (
+
+        if past_bookings:
+            # Turn off sauna only if no other booking is still active
+            still_active = (
                 db.query(Booking)
                 .filter(
                     Booking.date == today,
                     Booking.start_time <= current_time,
                     Booking.end_time > current_time,
-                    Booking.status.in_(["preheating", "active"]),
+                    Booking.status == "active",
                 )
                 .first()
             )
-            if not active_booking:
+            if not still_active:
                 try:
                     get_harvia().turn_off()
                     logger.info("Auto-shutoff: sauna turned off after booking ended")
@@ -713,8 +732,16 @@ def cancel_booking(booking_id: int):
             return err("Cannot cancel someone else's booking", 403)
         if booking.status == "completed":
             return err("Cannot cancel a completed booking")
+        was_active = booking.status == "active"
         booking.status = "cancelled"
         db.commit()
+        # If the session was in progress, turn the sauna off immediately
+        if was_active:
+            try:
+                get_harvia().turn_off()
+                logger.info("Sauna turned off after active booking %d was cancelled", booking.id)
+            except Exception as exc:
+                logger.warning("Could not turn off sauna after cancellation: %s", exc)
         return jsonify({"ok": True})
     finally:
         db.close()
