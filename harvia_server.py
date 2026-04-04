@@ -15,7 +15,7 @@ from flask import Flask, jsonify, request, send_from_directory, session
 from sqlalchemy.exc import IntegrityError
 
 from harvia_client import HarviaClient
-from models import DB_PATH, Booking, ControlLog, FamilyMember, SessionLocal, init_db
+from models import DB_PATH, Booking, ControlLog, FamilyMember, Preset, SessionLocal, init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -641,25 +641,55 @@ def sauna_set():
 # Preset routes
 # ---------------------------------------------------------------------------
 
-PRESETS = {
-    "quick": {"targetTemp": 80, "onTime": 30},
-    "standard": {"targetTemp": 90, "onTime": 60},
-    "long": {"targetTemp": 85, "onTime": 90},
-    "hot": {"targetTemp": 100, "onTime": 60},
-    "steam": {"targetTemp": 70, "onTime": 60, "steamEn": 1, "targetRh": 30},
-}
+_DEFAULT_PRESETS = [
+    {"name": "quick",    "label": "Quick Heat",   "target_temp": 80,  "on_time": 30,  "sort_order": 0},
+    {"name": "standard", "label": "Standard",     "target_temp": 90,  "on_time": 60,  "sort_order": 1},
+    {"name": "long",     "label": "Long Session", "target_temp": 85,  "on_time": 90,  "sort_order": 2},
+    {"name": "hot",      "label": "Hot & Fast",   "target_temp": 100, "on_time": 60,  "sort_order": 3},
+    {"name": "steam",    "label": "Steam",        "target_temp": 70,  "on_time": 60,  "steam_en": 1, "target_rh": 30, "sort_order": 4},
+]
+
+
+def _seed_presets():
+    with SessionLocal() as db:
+        if db.query(Preset).count() == 0:
+            for p in _DEFAULT_PRESETS:
+                db.add(Preset(**p))
+            db.commit()
+            logger.info("Seeded %d default presets", len(_DEFAULT_PRESETS))
 
 
 @app.route("/api/presets")
 def list_presets():
-    presets = []
-    for name, fields in PRESETS.items():
-        p = dict(fields)
-        p["name"] = name
-        if "targetTemp" in p:
-            p["targetTempF"] = c_to_f(p["targetTemp"])
-        presets.append(p)
-    return jsonify(presets)
+    db = SessionLocal()
+    try:
+        presets = db.query(Preset).order_by(Preset.sort_order).all()
+        return jsonify([p.to_dict() for p in presets])
+    finally:
+        db.close()
+
+
+@app.route("/api/admin/presets/<name>", methods=["PUT"])
+def admin_update_preset(name: str):
+    db, _, error = require_admin()
+    if error:
+        return error
+    body = request.get_json(silent=True) or {}
+    try:
+        preset = db.query(Preset).filter_by(name=name).first()
+        if not preset:
+            return err("Preset not found", 404)
+        if "label" in body:
+            preset.label = str(body["label"]).strip() or preset.label
+        if "target_temp" in body:
+            preset.target_temp = max(40, min(110, int(body["target_temp"])))
+        if "on_time" in body:
+            preset.on_time = max(5, min(240, int(body["on_time"])))
+        db.commit()
+        db.refresh(preset)
+        return jsonify({"ok": True, "preset": preset.to_dict()})
+    finally:
+        db.close()
 
 
 @app.route("/api/sauna/preset/<name>", methods=["POST"])
@@ -668,30 +698,41 @@ def apply_preset(name: str):
     if error:
         return error
     try:
-        if name not in PRESETS:
+        preset = db.query(Preset).filter_by(name=name).first()
+        if not preset:
             return err(f"Unknown preset '{name}'", 404)
-        preset_temp = PRESETS[name].get("targetTemp")
-        if member.max_temp is not None and preset_temp is not None and preset_temp > member.max_temp:
+        if member.max_temp is not None and preset.target_temp > member.max_temp:
             return err(
-                f"Preset temperature ({c_to_f(preset_temp)}°F) exceeds your limit of "
+                f"Preset temperature ({c_to_f(preset.target_temp)}°F) exceeds your limit of "
                 f"{c_to_f(member.max_temp)}°F ({member.max_temp}°C)", 400
             )
         mid, mname = member.id, member.name
+        p_temp, p_time, p_steam, p_rh, p_name = (
+            preset.target_temp, preset.on_time, preset.steam_en, preset.target_rh, preset.name
+        )
     finally:
         db.close()
-    payload = {**PRESETS[name], "active": 1}
+    payload = {"targetTemp": p_temp, "onTime": p_time, "active": 1}
+    if p_steam:
+        payload["steamEn"] = 1
+        if p_rh:
+            payload["targetRh"] = p_rh
     try:
         get_harvia().set_state(payload)
-        _log_sauna_action(
-            mid, mname, "preset",
-            target_temp=payload.get("targetTemp"),
-            on_time=payload.get("onTime"),
-            preset_name=name,
-        )
-        return jsonify({"ok": True, "preset": name, "applied": payload})
+        _log_sauna_action(mid, mname, "preset", target_temp=p_temp, on_time=p_time, preset_name=p_name)
+        return jsonify({"ok": True, "preset": p_name, "applied": payload})
     except Exception as exc:
         logger.error("Preset apply failed: %s", exc)
         return err(str(exc), 502)
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+@app.route("/health")
+def health():
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -910,6 +951,7 @@ def _startup():
 
     init_db()
     logger.info("Database initialised at %s", DB_PATH)
+    _seed_presets()
 
     if HARVIA_USERNAME and HARVIA_PASSWORD and HARVIA_DEVICE_ID:
         harvia = HarviaClient(HARVIA_USERNAME, HARVIA_PASSWORD, HARVIA_DEVICE_ID)

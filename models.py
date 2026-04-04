@@ -116,6 +116,30 @@ class Booking(Base):
         }
 
 
+class Preset(Base):
+    __tablename__ = "presets"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, unique=True, nullable=False)   # slug: quick, hot, …
+    label = Column(String, nullable=False)               # display name
+    target_temp = Column(Integer, nullable=False)        # °C
+    on_time = Column(Integer, nullable=False)            # minutes
+    steam_en = Column(Integer, default=0)
+    target_rh = Column(Integer, nullable=True)           # % humidity (steam only)
+    sort_order = Column(Integer, default=0)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "label": self.label,
+            "target_temp": self.target_temp,
+            "target_temp_f": _c_to_f(self.target_temp),
+            "on_time": self.on_time,
+            "steam_en": self.steam_en,
+            "target_rh": self.target_rh,
+        }
+
+
 class ControlLog(Base):
     __tablename__ = "control_log"
 
