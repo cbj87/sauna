@@ -2,6 +2,8 @@
 Sweat Box — Harvia sauna booking & control server.
 Flask API + static SPA host.
 """
+from __future__ import annotations
+
 import collections
 import json
 import logging

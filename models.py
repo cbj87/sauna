@@ -12,6 +12,7 @@ from sqlalchemy import (
     Time,
     create_engine,
     event,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 
@@ -169,5 +170,20 @@ class ControlLog(Base):
         }
 
 
+def _migrate_db():
+    """Add columns/tables that SQLAlchemy's create_all won't add to existing tables."""
+    migrations = [
+        "ALTER TABLE family_members ADD COLUMN max_temp INTEGER",
+    ]
+    with engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                pass  # Column/change already applied — safe to ignore
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _migrate_db()
