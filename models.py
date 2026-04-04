@@ -15,6 +15,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 
+
+def _c_to_f(c: int) -> int:
+    return round(c * 9 / 5 + 32)
+
 DB_PATH = os.environ.get("DB_PATH", "/data/sweatbox.db")
 # Fall back to local dir if /data doesn't exist (local dev)
 if not os.path.exists("/data"):
@@ -49,6 +53,7 @@ class FamilyMember(Base):
     is_admin = Column(Integer, default=0)
     default_temp = Column(Integer, default=90)   # °C
     default_time = Column(Integer, default=60)   # minutes
+    max_temp = Column(Integer, nullable=True)     # °C — admin-set limit; None = no limit
     color = Column(String, default="#F97316")    # hex color for calendar display
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -62,6 +67,7 @@ class FamilyMember(Base):
             "is_admin": bool(self.is_admin),
             "default_temp": self.default_temp,
             "default_time": self.default_time,
+            "max_temp": self.max_temp,
             "color": self.color,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
@@ -74,6 +80,7 @@ class FamilyMember(Base):
             "color": self.color,
             "default_temp": self.default_temp,
             "default_time": self.default_time,
+            "max_temp": self.max_temp,
         }
 
 
@@ -105,6 +112,35 @@ class Booking(Base):
             "target_temp": self.target_temp,
             "on_time": self.on_time,
             "status": self.status,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class ControlLog(Base):
+    __tablename__ = "control_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    member_id = Column(Integer, ForeignKey("family_members.id", ondelete="SET NULL"), nullable=True)
+    member_name = Column(String, nullable=True)   # denormalised — persists after member deletion
+    # on | off | set | preset
+    action = Column(String, nullable=False)
+    target_temp = Column(Integer, nullable=True)  # °C
+    on_time = Column(Integer, nullable=True)       # minutes
+    preset_name = Column(String, nullable=True)
+    notes = Column(String, nullable=True)          # JSON-encoded extra fields (light, fan, steamEn…)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "member_id": self.member_id,
+            "member_name": self.member_name,
+            "action": self.action,
+            "target_temp": self.target_temp,
+            "target_temp_f": _c_to_f(self.target_temp) if self.target_temp is not None else None,
+            "on_time": self.on_time,
+            "preset_name": self.preset_name,
+            "notes": self.notes,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

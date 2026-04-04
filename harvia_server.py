@@ -3,6 +3,7 @@ Sweat Box — Harvia sauna booking & control server.
 Flask API + static SPA host.
 """
 import collections
+import json
 import logging
 import os
 import threading
@@ -14,7 +15,7 @@ from flask import Flask, jsonify, request, send_from_directory, session
 from sqlalchemy.exc import IntegrityError
 
 from harvia_client import HarviaClient
-from models import DB_PATH, Booking, FamilyMember, SessionLocal, init_db
+from models import DB_PATH, Booking, ControlLog, FamilyMember, SessionLocal, init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -85,6 +86,32 @@ def _record_failed_attempt(ip: str) -> int:
 def _clear_attempts(ip: str) -> None:
     with _login_lock:
         _login_attempts.pop(ip, None)
+
+
+def _log_sauna_action(
+    member_id: int | None,
+    member_name: str | None,
+    action: str,
+    target_temp: int | None = None,
+    on_time: int | None = None,
+    preset_name: str | None = None,
+    notes: str | None = None,
+) -> None:
+    """Write a control log entry in its own session — never raises."""
+    try:
+        with SessionLocal() as db:
+            db.add(ControlLog(
+                member_id=member_id,
+                member_name=member_name,
+                action=action,
+                target_temp=target_temp,
+                on_time=on_time,
+                preset_name=preset_name,
+                notes=notes,
+            ))
+            db.commit()
+    except Exception as exc:
+        logger.error("Failed to write control log: %s", exc)
 
 
 def get_harvia() -> HarviaClient:
@@ -382,11 +409,15 @@ def admin_approve_member(member_id: int):
     db, _, error = require_admin()
     if error:
         return error
+    body = request.get_json(silent=True) or {}
     try:
         member = db.query(FamilyMember).filter_by(id=member_id).first()
         if not member:
             return err("Member not found", 404)
         member.status = "approved"
+        if "max_temp" in body:
+            raw = body["max_temp"]
+            member.max_temp = int(raw) if raw is not None else None
         db.commit()
         return jsonify({"ok": True, "member": member.to_dict()})
     finally:
@@ -431,6 +462,9 @@ def admin_update_member(member_id: int):
             member.color = body["color"]
         if "is_admin" in body:
             member.is_admin = 1 if body["is_admin"] else 0
+        if "max_temp" in body:
+            raw = body["max_temp"]
+            member.max_temp = int(raw) if raw is not None else None
         db.commit()
         db.refresh(member)
         return jsonify({"ok": True, "member": member.to_dict()})
@@ -519,20 +553,30 @@ def sauna_status():
 
 @app.route("/api/sauna/on", methods=["POST"])
 def sauna_on():
-    _, _, error = require_auth()
+    db, member, error = require_auth()
     if error:
         return error
-    body = request.get_json(silent=True) or {}
-    target_f = body.get("targetTempF")
-    target_c = body.get("targetTemp")
-    if target_f is not None:
-        target_c = f_to_c(float(target_f))
-    elif target_c is None:
-        target_c = 90
-    target_c = max(40, min(110, int(target_c)))
-    on_time = int(body.get("onTime", 60))
+    try:
+        body = request.get_json(silent=True) or {}
+        target_f = body.get("targetTempF")
+        target_c = body.get("targetTemp")
+        if target_f is not None:
+            target_c = f_to_c(float(target_f))
+        elif target_c is None:
+            target_c = 90
+        target_c = max(40, min(110, int(target_c)))
+        # Enforce per-member temperature limit
+        if member.max_temp is not None and target_c > member.max_temp:
+            return err(
+                f"Temperature exceeds your limit of {c_to_f(member.max_temp)}°F ({member.max_temp}°C)", 400
+            )
+        on_time = int(body.get("onTime", 60))
+        mid, mname = member.id, member.name
+    finally:
+        db.close()
     try:
         get_harvia().turn_on(target_c, on_time)
+        _log_sauna_action(mid, mname, "on", target_temp=target_c, on_time=on_time)
         return jsonify({"ok": True, "targetTemp": target_c, "targetTempF": c_to_f(target_c), "onTime": on_time})
     except Exception as exc:
         logger.error("Turn on failed: %s", exc)
@@ -541,11 +585,16 @@ def sauna_on():
 
 @app.route("/api/sauna/off", methods=["POST"])
 def sauna_off():
-    _, _, error = require_auth()
+    db, member, error = require_auth()
     if error:
         return error
     try:
+        mid, mname = member.id, member.name
+    finally:
+        db.close()
+    try:
         get_harvia().turn_off()
+        _log_sauna_action(mid, mname, "off")
         return jsonify({"ok": True})
     except Exception as exc:
         logger.error("Turn off failed: %s", exc)
@@ -554,20 +603,34 @@ def sauna_off():
 
 @app.route("/api/sauna/set", methods=["POST"])
 def sauna_set():
-    _, _, error = require_auth()
+    db, member, error = require_auth()
     if error:
         return error
-    body = request.get_json(silent=True) or {}
-    allowed = {"active", "targetTemp", "onTime", "maxOnTime", "maxTemp", "light", "fan", "steamEn", "targetRh"}
-    payload = {k: v for k, v in body.items() if k in allowed}
-    if "targetTempF" in body and "targetTemp" not in payload:
-        payload["targetTemp"] = f_to_c(float(body["targetTempF"]))
-    if "targetTemp" in payload:
-        payload["targetTemp"] = max(40, min(110, int(payload["targetTemp"])))
-    if not payload:
-        return err("No valid fields provided")
     try:
+        body = request.get_json(silent=True) or {}
+        allowed = {"active", "targetTemp", "onTime", "maxOnTime", "maxTemp", "light", "fan", "steamEn", "targetRh"}
+        payload = {k: v for k, v in body.items() if k in allowed}
+        if "targetTempF" in body and "targetTemp" not in payload:
+            payload["targetTemp"] = f_to_c(float(body["targetTempF"]))
+        if "targetTemp" in payload:
+            payload["targetTemp"] = max(40, min(110, int(payload["targetTemp"])))
+            # Enforce per-member temperature limit
+            if member.max_temp is not None and payload["targetTemp"] > member.max_temp:
+                return err(
+                    f"Temperature exceeds your limit of {c_to_f(member.max_temp)}°F ({member.max_temp}°C)", 400
+                )
+        if not payload:
+            return err("No valid fields provided")
+        mid, mname = member.id, member.name
+    finally:
+        db.close()
+    try:
+        log_target = payload.get("targetTemp")
+        log_on_time = payload.get("onTime")
+        extra = {k: v for k, v in payload.items() if k not in ("targetTemp", "onTime", "active")}
+        notes = json.dumps(extra) if extra else None
         get_harvia().set_state(payload)
+        _log_sauna_action(mid, mname, "set", target_temp=log_target, on_time=log_on_time, notes=notes)
         return jsonify({"ok": True, "applied": payload})
     except Exception as exc:
         logger.error("Set state failed: %s", exc)
@@ -601,18 +664,55 @@ def list_presets():
 
 @app.route("/api/sauna/preset/<name>", methods=["POST"])
 def apply_preset(name: str):
-    _, _, error = require_auth()
+    db, member, error = require_auth()
     if error:
         return error
-    if name not in PRESETS:
-        return err(f"Unknown preset '{name}'", 404)
+    try:
+        if name not in PRESETS:
+            return err(f"Unknown preset '{name}'", 404)
+        preset_temp = PRESETS[name].get("targetTemp")
+        if member.max_temp is not None and preset_temp is not None and preset_temp > member.max_temp:
+            return err(
+                f"Preset temperature ({c_to_f(preset_temp)}°F) exceeds your limit of "
+                f"{c_to_f(member.max_temp)}°F ({member.max_temp}°C)", 400
+            )
+        mid, mname = member.id, member.name
+    finally:
+        db.close()
     payload = {**PRESETS[name], "active": 1}
     try:
         get_harvia().set_state(payload)
+        _log_sauna_action(
+            mid, mname, "preset",
+            target_temp=payload.get("targetTemp"),
+            on_time=payload.get("onTime"),
+            preset_name=name,
+        )
         return jsonify({"ok": True, "preset": name, "applied": payload})
     except Exception as exc:
         logger.error("Preset apply failed: %s", exc)
         return err(str(exc), 502)
+
+
+# ---------------------------------------------------------------------------
+# Control log (admin only)
+# ---------------------------------------------------------------------------
+
+@app.route("/api/admin/control_log")
+def admin_control_log():
+    db, _, error = require_admin()
+    if error:
+        return error
+    try:
+        logs = (
+            db.query(ControlLog)
+            .order_by(ControlLog.created_at.desc())
+            .limit(200)
+            .all()
+        )
+        return jsonify([l.to_dict() for l in logs])
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------

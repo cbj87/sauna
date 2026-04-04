@@ -171,6 +171,8 @@ function BookingModal({ defaultTime, defaultDate, members, onClose, onSave }) {
   })();
 
   const selectedMember = members.find(m => m.id === Number(memberId));
+  const memberMaxTempF = selectedMember?.max_temp ? cToF(selectedMember.max_temp) : 230;
+  const effectiveTempF = Math.min(tempF, memberMaxTempF);
 
   async function handleSave() {
     await onSave({
@@ -178,7 +180,7 @@ function BookingModal({ defaultTime, defaultDate, members, onClose, onSave }) {
       date: defaultDate || now.toISOString().slice(0,10),
       start_time: startTime,
       end_time: endTime,
-      target_temp: fToC(tempF),
+      target_temp: fToC(effectiveTempF),
       on_time: durationMins,
     });
   }
@@ -196,7 +198,7 @@ function BookingModal({ defaultTime, defaultDate, members, onClose, onSave }) {
               <button key={m.id}
                 className={`px-4 py-2 rounded-xl font-semibold text-sm transition-all ${memberId===m.id?'ring-2 ring-white':'opacity-60'}`}
                 style={{background: m.color+'44', color: m.color, border: `2px solid ${m.color}`}}
-                onClick={() => { setMemberId(m.id); setTempF(cToF(m.default_temp)); setDurationMins(m.default_time); }}>
+                onClick={() => { setMemberId(m.id); const maxF = m.max_temp ? cToF(m.max_temp) : 230; setTempF(Math.min(cToF(m.default_temp), maxF)); setDurationMins(m.default_time); }}>
                 {m.name}
               </button>
             ))}
@@ -224,10 +226,10 @@ function BookingModal({ defaultTime, defaultDate, members, onClose, onSave }) {
 
         {/* temp */}
         <div className="mb-6">
-          <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Temperature — {tempF}°F ({fToC(tempF)}°C)</label>
-          <input type="range" min={104} max={230} step={2} value={tempF} onChange={e=>setTempF(Number(e.target.value))}
+          <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Temperature — {effectiveTempF}°F ({fToC(effectiveTempF)}°C){selectedMember?.max_temp ? <span className="text-orange-400 ml-1">(max {cToF(selectedMember.max_temp)}°F)</span> : null}</label>
+          <input type="range" min={104} max={memberMaxTempF} step={2} value={effectiveTempF} onChange={e=>setTempF(Number(e.target.value))}
             className="w-full h-3" />
-          <div className="flex justify-between text-xs text-gray-500 mt-1"><span>104°F</span><span>230°F</span></div>
+          <div className="flex justify-between text-xs text-gray-500 mt-1"><span>104°F</span><span>{memberMaxTempF}°F</span></div>
         </div>
 
         <div className="text-xs text-gray-500 mb-4">
@@ -442,11 +444,15 @@ function Controls({ status, bookings, members, currentMember, onRefresh, toast }
   // Live member profile (always up-to-date from the members list)
   const myProfile = members.find(m => m.id === currentMember?.id);
 
+  // Per-member max temperature (from live profile, fallback to session data)
+  const myMaxTempC = myProfile?.max_temp ?? currentMember?.max_temp ?? null;
+  const myMaxTempF = myMaxTempC ? cToF(myMaxTempC) : 230;
+
   // Seed state from booking → live profile → auth session → hardcoded fallback
   const seedTemp = relevantBookings[0]?.target_temp ?? myProfile?.default_temp ?? currentMember?.default_temp ?? 90;
   const seedDur  = relevantBookings[0]?.on_time    ?? myProfile?.default_time  ?? currentMember?.default_time  ?? 60;
 
-  const [tempF, setTempF] = useState(cToF(seedTemp));
+  const [tempF, setTempF] = useState(Math.min(cToF(seedTemp), myMaxTempF));
   const [duration, setDuration] = useState(seedDur);
 
   // Re-sync defaults when members finish loading (or preferences change),
@@ -478,7 +484,7 @@ function Controls({ status, bookings, members, currentMember, onRefresh, toast }
         await api('/api/sauna/off', {method:'POST'});
         toast('Sauna turned off', 'info');
       } else {
-        await api('/api/sauna/on', {method:'POST', body:{targetTempF: tempF, onTime: duration}});
+        await api('/api/sauna/on', {method:'POST', body:{targetTempF: Math.min(tempF, myMaxTempF), onTime: duration}});
         toast('Sauna is heating up!', 'success');
       }
       setTimeout(onRefresh, 1500);
@@ -490,7 +496,7 @@ function Controls({ status, bookings, members, currentMember, onRefresh, toast }
   async function handleSet() {
     setLoading(true);
     try {
-      await api('/api/sauna/set', {method:'POST', body:{targetTempF: tempF, onTime: duration}});
+      await api('/api/sauna/set', {method:'POST', body:{targetTempF: Math.min(tempF, myMaxTempF), onTime: duration}});
       toast('Settings updated', 'success');
       setTimeout(onRefresh, 1000);
     } catch(e) { toast(e.message, 'error'); }
@@ -541,12 +547,12 @@ function Controls({ status, bookings, members, currentMember, onRefresh, toast }
       {/* temp slider */}
       <div className="mb-4">
         <div className="flex justify-between text-sm mb-2">
-          <span className="text-gray-400">Target temp</span>
-          <span className="font-bold text-orange-400">{tempF}°F <span className="text-gray-500 font-normal">({fToC(tempF)}°C)</span></span>
+          <span className="text-gray-400">Target temp{myMaxTempC ? <span className="text-xs text-orange-500 ml-1.5">max {myMaxTempF}°F</span> : null}</span>
+          <span className="font-bold text-orange-400">{Math.min(tempF, myMaxTempF)}°F <span className="text-gray-500 font-normal">({fToC(Math.min(tempF, myMaxTempF))}°C)</span></span>
         </div>
-        <input type="range" min={104} max={230} step={2} value={tempF}
+        <input type="range" min={104} max={myMaxTempF} step={2} value={Math.min(tempF, myMaxTempF)}
           onChange={e=>{ setManuallySet(true); setTempF(Number(e.target.value)); }} className="w-full h-3" />
-        <div className="flex justify-between text-xs text-gray-600 mt-1"><span>104°F</span><span>230°F</span></div>
+        <div className="flex justify-between text-xs text-gray-600 mt-1"><span>104°F</span><span>{myMaxTempF}°F</span></div>
       </div>
 
       {/* duration */}
@@ -762,17 +768,34 @@ function PendingScreen({ onLogout }) {
 // ─── admin panel ──────────────────────────────────────────────────────────────
 function AdminPanel({ currentMember }) {
   const [data, setData] = useState(null);
+  const [log, setLog] = useState(null);
   const [busy, setBusy] = useState(false);
+  // approve flow
+  const [approvingId, setApprovingId] = useState(null);
+  const [approveHasLimit, setApproveHasLimit] = useState(false);
+  const [approveMaxTempF, setApproveMaxTempF] = useState(212);
+  // max temp inline edit for approved members
+  const [editMaxTempId, setEditMaxTempId] = useState(null);
+  const [editMaxTempHasLimit, setEditMaxTempHasLimit] = useState(false);
+  const [editMaxTempF, setEditMaxTempF] = useState(212);
 
   async function load() {
     try { setData(await api('/api/admin/members')); } catch {}
   }
+  async function loadLog() {
+    try { setLog(await api('/api/admin/control_log')); } catch {}
+  }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); loadLog(); }, []);
 
   async function approve(id) {
     setBusy(true);
-    try { await api(`/api/admin/members/${id}/approve`, {method:'POST'}); await load(); }
+    try {
+      const body = approveHasLimit ? { max_temp: fToC(approveMaxTempF) } : {};
+      await api(`/api/admin/members/${id}/approve`, {method:'POST', body});
+      setApprovingId(null); setApproveHasLimit(false);
+      await load();
+    }
     catch(e) { alert(e.message); }
     finally { setBusy(false); }
   }
@@ -793,10 +816,34 @@ function AdminPanel({ currentMember }) {
     finally { setBusy(false); }
   }
 
+  function startEditMaxTemp(m) {
+    setEditMaxTempId(m.id);
+    setEditMaxTempHasLimit(m.max_temp != null);
+    setEditMaxTempF(m.max_temp ? cToF(m.max_temp) : 212);
+  }
+
+  async function saveMaxTemp(id) {
+    setBusy(true);
+    try {
+      const body = { max_temp: editMaxTempHasLimit ? fToC(editMaxTempF) : null };
+      await api(`/api/admin/members/${id}`, {method:'PUT', body});
+      setEditMaxTempId(null);
+      await load();
+    }
+    catch(e) { alert(e.message); }
+    finally { setBusy(false); }
+  }
+
   if (!data) return <div className="text-center text-gray-500 py-8 pulse">Loading…</div>;
 
   const pending = data.members.filter(m => m.status === 'pending');
   const approved = data.members.filter(m => m.status === 'approved');
+
+  function fmtLogTime(iso) {
+    const d = new Date(iso + 'Z');
+    return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+  }
+  const actionColors = { on:'bg-green-900 text-green-300', off:'bg-gray-700 text-gray-400', set:'bg-blue-900 text-blue-300', preset:'bg-purple-900 text-purple-300' };
 
   return (
     <div className="space-y-5">
@@ -805,21 +852,46 @@ function AdminPanel({ currentMember }) {
           <h2 className="font-bold text-base mb-4 text-orange-400">Pending Approval ({pending.length})</h2>
           <div className="space-y-3">
             {pending.map(m => (
-              <div key={m.id} className="flex items-center justify-between bg-gray-700/50 rounded-xl px-4 py-3">
-                <div>
-                  <div className="font-semibold">{m.name}</div>
-                  <div className="text-xs text-gray-400">Awaiting approval</div>
+              <div key={m.id} className="bg-gray-700/50 rounded-xl overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3">
+                  <div>
+                    <div className="font-semibold">{m.name}</div>
+                    <div className="text-xs text-gray-400">Awaiting approval</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => { setApprovingId(approvingId === m.id ? null : m.id); setApproveHasLimit(false); }} disabled={busy}
+                      className="bg-green-700 hover:bg-green-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50">
+                      Approve…
+                    </button>
+                    <button onClick={() => reject(m.id)} disabled={busy}
+                      className="bg-red-900 hover:bg-red-800 text-red-300 text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50">
+                      Reject
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <button onClick={() => approve(m.id)} disabled={busy}
-                    className="bg-green-700 hover:bg-green-600 text-white text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50">
-                    Approve
-                  </button>
-                  <button onClick={() => reject(m.id)} disabled={busy}
-                    className="bg-red-900 hover:bg-red-800 text-red-300 text-xs font-bold px-3 py-1.5 rounded-lg disabled:opacity-50">
-                    Reject
-                  </button>
-                </div>
+                {approvingId === m.id && (
+                  <div className="px-4 pb-4 pt-2 border-t border-gray-600/50 fade-in">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-sm text-gray-300 font-semibold">Max temperature limit</span>
+                      <button onClick={() => setApproveHasLimit(!approveHasLimit)}
+                        className={`relative w-10 h-5 rounded-full transition-colors ${approveHasLimit ? 'bg-orange-500' : 'bg-gray-600'}`}>
+                        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${approveHasLimit ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                      </button>
+                    </div>
+                    {approveHasLimit && (
+                      <div className="mb-3">
+                        <div className="text-xs text-gray-400 mb-1">{approveMaxTempF}°F ({fToC(approveMaxTempF)}°C)</div>
+                        <input type="range" min={104} max={230} step={2} value={approveMaxTempF}
+                          onChange={e => setApproveMaxTempF(Number(e.target.value))} className="w-full" />
+                        <div className="flex justify-between text-xs text-gray-600 mt-0.5"><span>104°F</span><span>230°F</span></div>
+                      </div>
+                    )}
+                    <button onClick={() => approve(m.id)} disabled={busy}
+                      className="w-full py-2 rounded-xl font-bold text-white bg-green-700 hover:bg-green-600 disabled:opacity-50">
+                      {approveHasLimit ? `Approve with ${approveMaxTempF}°F limit` : 'Approve (no limit)'}
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -830,30 +902,91 @@ function AdminPanel({ currentMember }) {
         <h2 className="font-bold text-base mb-4">Members ({approved.length})</h2>
         <div className="space-y-2">
           {approved.map(m => (
-            <div key={m.id} className="flex items-center justify-between bg-gray-700/50 rounded-xl px-4 py-3">
-              <div className="flex items-center gap-3">
-                <div className="w-3 h-3 rounded-full" style={{background: m.color || '#6B7280'}} />
-                <div>
-                  <div className="font-semibold">
-                    {m.name}
-                    {m.is_admin ? <span className="text-xs text-orange-400 ml-1.5">admin</span> : null}
+            <div key={m.id} className="bg-gray-700/50 rounded-xl overflow-hidden">
+              <div className="flex items-center justify-between px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-3 h-3 rounded-full flex-shrink-0" style={{background: m.color || '#6B7280'}} />
+                  <div>
+                    <div className="font-semibold">
+                      {m.name}
+                      {m.is_admin ? <span className="text-xs text-orange-400 ml-1.5">admin</span> : null}
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      {cToF(m.default_temp)}°F · {m.default_time} min
+                      {m.max_temp != null
+                        ? <span className="text-orange-400 ml-1.5">· max {cToF(m.max_temp)}°F</span>
+                        : <span className="text-gray-600 ml-1.5">· no temp limit</span>}
+                    </div>
                   </div>
-                  <div className="text-xs text-gray-400">{cToF(m.default_temp)}°F · {m.default_time} min</div>
                 </div>
+                {m.id !== currentMember.id && (
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => editMaxTempId === m.id ? setEditMaxTempId(null) : startEditMaxTemp(m)} disabled={busy}
+                      className="text-xs text-gray-500 hover:text-orange-400 font-semibold px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors disabled:opacity-50">
+                      {editMaxTempId === m.id ? 'cancel' : 'limit'}
+                    </button>
+                    <button onClick={() => toggleAdmin(m.id, !m.is_admin)} disabled={busy}
+                      className={`text-xs font-semibold px-2 py-1 rounded-lg transition-colors disabled:opacity-50 ${m.is_admin ? 'text-orange-400 hover:bg-orange-900/40' : 'text-gray-500 hover:text-orange-400 hover:bg-gray-700'}`}>
+                      {m.is_admin ? 'admin ✓' : 'admin'}
+                    </button>
+                    <button onClick={() => reject(m.id)} disabled={busy}
+                      className="text-gray-600 hover:text-red-400 text-lg leading-none disabled:opacity-50">×</button>
+                  </div>
+                )}
               </div>
-              {m.id !== currentMember.id && (
-                <div className="flex items-center gap-2">
-                  <button onClick={() => toggleAdmin(m.id, !m.is_admin)} disabled={busy}
-                    className={`text-xs font-semibold px-2 py-1 rounded-lg transition-colors disabled:opacity-50 ${m.is_admin ? 'text-orange-400 hover:bg-orange-900/40' : 'text-gray-500 hover:text-orange-400 hover:bg-gray-700'}`}>
-                    {m.is_admin ? 'admin ✓' : 'make admin'}
+              {editMaxTempId === m.id && (
+                <div className="px-4 pb-4 pt-2 border-t border-gray-600/50 fade-in">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-sm text-gray-300 font-semibold">Max temperature limit</span>
+                    <button onClick={() => setEditMaxTempHasLimit(!editMaxTempHasLimit)}
+                      className={`relative w-10 h-5 rounded-full transition-colors ${editMaxTempHasLimit ? 'bg-orange-500' : 'bg-gray-600'}`}>
+                      <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${editMaxTempHasLimit ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                    </button>
+                  </div>
+                  {editMaxTempHasLimit && (
+                    <div className="mb-3">
+                      <div className="text-xs text-gray-400 mb-1">{editMaxTempF}°F ({fToC(editMaxTempF)}°C)</div>
+                      <input type="range" min={104} max={230} step={2} value={editMaxTempF}
+                        onChange={e => setEditMaxTempF(Number(e.target.value))} className="w-full" />
+                      <div className="flex justify-between text-xs text-gray-600 mt-0.5"><span>104°F</span><span>230°F</span></div>
+                    </div>
+                  )}
+                  <button onClick={() => saveMaxTemp(m.id)} disabled={busy}
+                    className="w-full py-2 rounded-xl font-bold text-white bg-orange-500 hover:bg-orange-400 disabled:opacity-50">
+                    {editMaxTempHasLimit ? `Set limit to ${editMaxTempF}°F` : 'Remove limit'}
                   </button>
-                  <button onClick={() => reject(m.id)} disabled={busy}
-                    className="text-gray-600 hover:text-red-400 text-lg leading-none disabled:opacity-50">×</button>
                 </div>
               )}
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="bg-gray-800 rounded-2xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-bold text-base">Control Log</h2>
+          <button onClick={loadLog} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
+        </div>
+        {log == null ? (
+          <p className="text-gray-500 text-sm pulse">Loading…</p>
+        ) : log.length === 0 ? (
+          <p className="text-gray-500 text-sm">No control actions yet.</p>
+        ) : (
+          <div className="space-y-1.5">
+            {log.map(entry => (
+              <div key={entry.id} className="flex items-center gap-2 bg-gray-700/50 rounded-lg px-3 py-2 text-sm flex-wrap">
+                <span className="text-gray-500 text-xs w-32 flex-shrink-0">{fmtLogTime(entry.created_at)}</span>
+                <span className="font-semibold text-white w-20 truncate flex-shrink-0">{entry.member_name || '—'}</span>
+                <span className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${actionColors[entry.action] || 'bg-gray-700 text-gray-300'}`}>
+                  {entry.preset_name || entry.action}
+                </span>
+                {entry.target_temp_f != null && <span className="text-orange-400 font-semibold">{entry.target_temp_f}°F</span>}
+                {entry.on_time != null && <span className="text-gray-400">{entry.on_time} min</span>}
+                {entry.notes && <span className="text-gray-600 text-xs truncate">{entry.notes}</span>}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
