@@ -11,7 +11,7 @@
 - [x] **Preheat window allows triggering 5 min after session start** — `minutes_until < -5` guard is likely unintentional; should be `< 0`
 - [x] **Status display missing target temp** — Controls live-readings panel shows current temp and remaining time but not what temp the sauna is set to heat *to*
 - [x] **Status pill goes stale on non-Controls tabs** — status is no longer polled globally so the header pill stays frozen unless you visit the Controls tab
-- [ ] **Midnight-spanning bookings silently fail** — if end time is after midnight (e.g. 23:00–01:00 next day), the server rejects it with "end_time must be after start_time" and the user gets no helpful message; the UI should either block it or support next-day end times
+- [x] **Midnight-spanning bookings silently fail** — if end time is after midnight (e.g. 23:00–01:00 next day), the server rejects it with "end_time must be after start_time" and the user gets no helpful message; the UI should either block it or support next-day end times
 - [ ] **Booking end time allows impossible values** — the time picker doesn't validate `hour < 24`, so entering "25:00" wraps to 01:00 on the same date, creating a slot that ends before it starts and breaks the timeline renderer
 - [ ] **Past times are selectable in booking modal** — nothing prevents booking 06:00 AM on a day where it's already 7 PM; the backend rejects it but the error message gives no hint about the real cause
 - [ ] **Auto-shutoff misses midnight boundary** — the scheduler checks `booking.end_time <= current_time` with the same date; if a booking ends at 23:59 the scheduler sees it as already-past on the next day's run but the sauna was never turned off overnight
@@ -94,7 +94,7 @@
 - [x] **Railway volume for DB persistence** — add a `/data` volume in Railway and set `DB_PATH=/data/sweatbox.db` in env vars so members and bookings survive redeploys (see `.env.example`)
 - [x] **Favicon** — sauna emoji favicon in browser tab
 - [x] **Health check endpoint** — `GET /health` returning `{ok: true}` for Railway uptime monitoring
-- [ ] **Timezone handling** — all `datetime.now()` calls use server-local time with no timezone info; if the Railway server is UTC and the family is in a different zone, booking times and scheduler jobs fire at wrong local times; store and display times in the user's local timezone
+- [x] **Timezone handling** — all `datetime.now()` calls use server-local time with no timezone info; if the Railway server is UTC and the family is in a different zone, booking times and scheduler jobs fire at wrong local times; fixed via `APP_TIMEZONE` env var + `app_now()` helper using `zoneinfo.ZoneInfo`
 - [ ] **Error boundary** — wrap the React app in an error boundary so a JS crash shows a friendly message instead of a blank screen
 - [ ] **Logging / Sentry** — add structured error logging or a Sentry integration so production crashes are visible
 - [ ] **CDN fallback** — React and Tailwind are loaded from `unpkg.com`; if that CDN is unavailable the app is completely broken; vendor the files into `/static` or add a local fallback
