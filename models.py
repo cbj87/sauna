@@ -9,6 +9,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
     Time,
     create_engine,
     event,
@@ -97,6 +98,7 @@ class Booking(Base):
     on_time = Column(Integer)       # minutes
     # scheduled | preheating | active | completed | cancelled
     status = Column(String, default="scheduled")
+    preheat_notified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     member = relationship("FamilyMember", back_populates="bookings")
@@ -141,6 +143,17 @@ class Preset(Base):
         }
 
 
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    member_id = Column(Integer, ForeignKey("family_members.id", ondelete="CASCADE"), nullable=False)
+    endpoint = Column(Text, unique=True, nullable=False)
+    p256dh = Column(String, nullable=False)
+    auth = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ControlLog(Base):
     __tablename__ = "control_log"
 
@@ -174,6 +187,7 @@ def _migrate_db():
     """Add columns/tables that SQLAlchemy's create_all won't add to existing tables."""
     migrations = [
         "ALTER TABLE family_members ADD COLUMN max_temp INTEGER",
+        "ALTER TABLE bookings ADD COLUMN preheat_notified_at DATETIME",
     ]
     with engine.connect() as conn:
         for stmt in migrations:

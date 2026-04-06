@@ -11,6 +11,11 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Sweat Box">
   <meta name="theme-color" content="#f97316">
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    }
+  </script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -1118,6 +1123,13 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
 }
 
 // ─── main app ─────────────────────────────────────────────────────────────────
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
 function MainApp({ currentMember, onLogout }) {
   const [status, setStatus] = useState(null);
   const [bookings, setBookings] = useState([]);
@@ -1130,6 +1142,10 @@ function MainApp({ currentMember, onLogout }) {
   const [pendingCount, setPendingCount] = useState(0);
   const { toasts, push: toast } = useToast();
   const statusRef = useRef(null);
+
+  // Push notifications
+  const [vapidKey, setVapidKey] = useState(null);
+  const [notifState, setNotifState] = useState('loading'); // loading | unsupported | default | granted | denied | subscribed
 
   const today = new Date().toISOString().slice(0,10);
   const [viewDate, setViewDate] = useState(today);
@@ -1186,6 +1202,65 @@ function MainApp({ currentMember, onLogout }) {
     return () => clearInterval(interval);
   }, []);
 
+  // Push notification setup
+  useEffect(() => {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setNotifState('unsupported');
+      return;
+    }
+    api('/api/push/vapid-key').then(d => {
+      if (d.publicKey) setVapidKey(d.publicKey);
+    }).catch(() => {});
+    navigator.serviceWorker.ready.then(async reg => {
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        setNotifState('subscribed');
+      } else {
+        setNotifState(Notification.permission === 'denied' ? 'denied' : 'default');
+      }
+    });
+    // Listen for messages from SW (e.g. notification tap → open booking)
+    navigator.serviceWorker.addEventListener('message', e => {
+      if (e.data?.type === 'OPEN_BOOKING') {
+        setTab('today');
+      }
+    });
+  }, []);
+
+  async function subscribePush() {
+    if (!vapidKey) return;
+    if (notifState === 'subscribed') {
+      // Toggle off
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          await api('/api/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } });
+          await sub.unsubscribe();
+        }
+        setNotifState('default');
+        toast('Notifications disabled', 'info');
+      } catch(e) { toast('Could not disable notifications', 'error'); }
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') { setNotifState('denied'); return; }
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidKey),
+      });
+      const subJson = sub.toJSON();
+      await api('/api/push/subscribe', {
+        method: 'POST',
+        body: { endpoint: subJson.endpoint, p256dh: subJson.keys.p256dh, auth: subJson.keys.auth },
+      });
+      setNotifState('subscribed');
+      toast('Preheat reminders on!', 'success');
+    } catch(e) { toast('Could not enable notifications', 'error'); }
+  }
+
   async function handleCreateBooking(data) {
     try {
       await api('/api/bookings', {method:'POST', body:data});
@@ -1232,8 +1307,17 @@ function MainApp({ currentMember, onLogout }) {
       <header className="sticky top-0 z-30 bg-gray-900/95 backdrop-blur border-b border-gray-800 px-5 py-4">
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-black tracking-tight">🛖 Sweat Box</h1>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <StatusPill status={status} />
+            {vapidKey && notifState !== 'unsupported' && notifState !== 'loading' && (
+              <button
+                onClick={subscribePush}
+                title={notifState === 'subscribed' ? 'Reminders on — tap to disable' : notifState === 'denied' ? 'Notifications blocked in browser settings' : 'Enable preheat reminders'}
+                className={`text-base px-1.5 py-1 rounded-lg transition-colors ${notifState === 'subscribed' ? 'text-orange-400 hover:bg-gray-800' : notifState === 'denied' ? 'text-red-500 opacity-60 cursor-not-allowed' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+                disabled={notifState === 'denied'}>
+                {notifState === 'subscribed' ? '🔔' : notifState === 'denied' ? '🔕' : '🔔'}
+              </button>
+            )}
             <button onClick={onLogout} title={`Logout ${currentMember?.name}`}
               className="text-xs text-gray-500 hover:text-gray-300 font-semibold px-2 py-1 rounded-lg hover:bg-gray-800 transition-colors">
               {currentMember?.name} ↩

@@ -17,7 +17,7 @@ from flask import Flask, jsonify, request, send_from_directory, session
 from sqlalchemy.exc import IntegrityError
 
 from harvia_client import HarviaClient
-from models import DB_PATH, Booking, ControlLog, FamilyMember, Preset, SessionLocal, init_db
+from models import DB_PATH, Booking, ControlLog, FamilyMember, Preset, PushSubscription, SessionLocal, init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -45,6 +45,10 @@ app.permanent_session_lifetime = timedelta(days=30)
 HARVIA_USERNAME = os.environ.get("HARVIA_USERNAME", "")
 HARVIA_PASSWORD = os.environ.get("HARVIA_PASSWORD", "")
 HARVIA_DEVICE_ID = os.environ.get("HARVIA_DEVICE_ID", "")
+
+VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
+VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
+VAPID_CLAIMS_EMAIL = os.environ.get("VAPID_CLAIMS_EMAIL", "sweatbox@localhost")
 
 harvia: HarviaClient | None = None
 
@@ -114,6 +118,33 @@ def _log_sauna_action(
             db.commit()
     except Exception as exc:
         logger.error("Failed to write control log: %s", exc)
+
+
+def _send_push(sub_info: dict, payload: dict):
+    """Send a Web Push notification.
+
+    Returns True on success, an HTTP status code int on push-service error, or False on other failure.
+    A 410 response means the subscription has expired and should be deleted.
+    """
+    if not VAPID_PRIVATE_KEY:
+        return False
+    try:
+        from pywebpush import WebPushException, webpush
+        webpush(
+            subscription_info=sub_info,
+            data=json.dumps(payload),
+            vapid_private_key=VAPID_PRIVATE_KEY,
+            vapid_claims={"sub": f"mailto:{VAPID_CLAIMS_EMAIL}"},
+        )
+        return True
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        if response is not None:
+            code = getattr(response, "status_code", None)
+            logger.warning("Push notification HTTP error %s", code)
+            return code
+        logger.error("Push notification failed: %s", exc)
+        return False
 
 
 def get_harvia() -> HarviaClient:
@@ -243,8 +274,70 @@ def check_and_auto_shutoff():
                     logger.error("Auto-shutoff failed: %s", exc)
 
 
+def check_preheat_reminders():
+    """Send push notifications for upcoming bookings when it's time to preheat."""
+    if not VAPID_PRIVATE_KEY:
+        return
+
+    now = datetime.now()
+    today = now.date()
+
+    with SessionLocal() as db:
+        pending = (
+            db.query(Booking)
+            .filter(
+                Booking.date == today,
+                Booking.status == "scheduled",
+                Booking.preheat_notified_at.is_(None),
+            )
+            .all()
+        )
+
+        for booking in pending:
+            preheat_min = booking.on_time or 30
+            # Notify preheat_min + 5 minutes before start so there's time to react
+            notify_before = preheat_min + 5
+            start_dt = datetime.combine(booking.date, booking.start_time)
+            notify_at = start_dt - timedelta(minutes=notify_before)
+
+            if now < notify_at or now >= start_dt:
+                continue
+
+            subs = db.query(PushSubscription).filter_by(member_id=booking.member_id).all()
+            # Mark notified even if no subscriptions so we don't re-check every minute
+            booking.preheat_notified_at = now
+
+            dead_endpoints = []
+            for sub in subs:
+                start_12h = booking.start_time.strftime("%I:%M %p").lstrip("0")
+                result = _send_push(
+                    {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
+                    {
+                        "title": "🔥 Time to preheat!",
+                        "body": f"Your session starts at {start_12h}. Head over and start preheating now.",
+                        "tag": f"preheat-{booking.id}",
+                        "url": "/",
+                        "bookingId": booking.id,
+                    },
+                )
+                if result is True:
+                    logger.info(
+                        "Preheat reminder sent for booking %d (member_id=%d)",
+                        booking.id,
+                        booking.member_id,
+                    )
+                elif result == 410:
+                    dead_endpoints.append(sub.endpoint)
+
+            for ep in dead_endpoints:
+                db.query(PushSubscription).filter_by(endpoint=ep).delete()
+
+            db.commit()
+
+
 scheduler = BackgroundScheduler(daemon=True)
 scheduler.add_job(check_and_auto_shutoff, "interval", seconds=60, id="auto_shutoff")
+scheduler.add_job(check_preheat_reminders, "interval", seconds=60, id="preheat_reminders")
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +863,66 @@ def admin_control_log():
             .all()
         )
         return jsonify([l.to_dict() for l in logs])
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Push notification routes
+# ---------------------------------------------------------------------------
+
+@app.route("/api/push/vapid-key")
+def push_vapid_key():
+    return jsonify({"publicKey": VAPID_PUBLIC_KEY})
+
+
+@app.route("/api/push/subscribe", methods=["POST"])
+def push_subscribe():
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        body = request.get_json(silent=True) or {}
+        endpoint = body.get("endpoint", "").strip()
+        p256dh = body.get("p256dh", "").strip()
+        auth_key = body.get("auth", "").strip()
+        if not endpoint or not p256dh or not auth_key:
+            return err("endpoint, p256dh, and auth are required")
+
+        existing = db.query(PushSubscription).filter_by(endpoint=endpoint).first()
+        if existing:
+            existing.member_id = member.id
+            existing.p256dh = p256dh
+            existing.auth = auth_key
+        else:
+            db.add(PushSubscription(
+                member_id=member.id,
+                endpoint=endpoint,
+                p256dh=p256dh,
+                auth=auth_key,
+            ))
+        db.commit()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
+@app.route("/api/push/unsubscribe", methods=["POST"])
+def push_unsubscribe():
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        body = request.get_json(silent=True) or {}
+        endpoint = body.get("endpoint", "").strip()
+        if endpoint:
+            db.query(PushSubscription).filter_by(
+                member_id=member.id, endpoint=endpoint
+            ).delete()
+        else:
+            db.query(PushSubscription).filter_by(member_id=member.id).delete()
+        db.commit()
+        return jsonify({"ok": True})
     finally:
         db.close()
 
