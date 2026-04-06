@@ -557,18 +557,6 @@ function Controls({ status, bookings, members, presets = [], currentMember, onRe
         </div>
       </div>
 
-      {/* indicators */}
-      <div className="flex gap-2 mb-5 flex-wrap">
-        {[
-          {label:'Heat', val: status?.heatOn, icon:'🔥'},
-          {label:'Steam', val: status?.steamOn, icon:'💧'},
-        ].map(({label,val,icon}) => (
-          <div key={label} className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full ${val?'bg-orange-900 text-orange-300':'bg-gray-700 text-gray-500'}`}>
-            {icon} {label}
-          </div>
-        ))}
-      </div>
-
       {/* presets */}
       {presets.length > 0 && (
         <div className="mb-4">
