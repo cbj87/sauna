@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Sweat Box</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛖</text></svg>">
   <link rel="manifest" href="/manifest.json">
@@ -29,6 +29,15 @@
     @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
     .pulse { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+    /* PWA bottom nav — hidden in browser, shown when installed */
+    .pwa-bottom-nav { display: none; }
+    @media (display-mode: standalone) {
+      .pwa-top-nav    { display: none !important; }
+      .pwa-bottom-nav { display: flex !important; }
+      .pwa-main       { padding-bottom: calc(5rem + env(safe-area-inset-bottom)) !important; }
+      .pwa-fab        { bottom: calc(4.75rem + env(safe-area-inset-bottom)) !important; }
+    }
   </style>
 </head>
 <body>
@@ -1448,27 +1457,48 @@ function MainApp({ currentMember, onLogout }) {
       )}
 
       {/* tab nav */}
-      <nav className="flex border-b border-gray-800 bg-gray-900 sticky top-[65px] z-20">
-        {[
-          {id:'today', label:'Today'},
-          {id:'controls', label:'Controls'},
-          {id:'members', label:'Members'},
-          ...(currentMember?.is_admin ? [{id:'admin', label:'Admin', badge: pendingCount}] : []),
-        ].map(t => (
+      {(() => {
+        const tabs = [
+          {id:'today',    label:'Today',    icon:'🗓️'},
+          {id:'controls', label:'Controls', icon:'🔥'},
+          {id:'members',  label:'Members',  icon:'👤'},
+          ...(currentMember?.is_admin ? [{id:'admin', label:'Admin', icon:'⚙️', badge: pendingCount}] : []),
+        ];
+        const TopBtn = t => (
           <button key={t.id} onClick={()=>setTab(t.id)}
             className={`flex-1 py-3 text-sm font-semibold transition-colors relative ${tab===t.id?'text-orange-400 border-b-2 border-orange-400':'text-gray-500 hover:text-gray-300'}`}>
             {t.label}
             {t.badge > 0 && (
-              <span className="absolute top-1.5 right-1/4 w-4 h-4 bg-orange-500 text-white text-xs font-black rounded-full flex items-center justify-center leading-none">
-                {t.badge}
-              </span>
+              <span className="absolute top-1.5 right-1/4 w-4 h-4 bg-orange-500 text-white text-xs font-black rounded-full flex items-center justify-center leading-none">{t.badge}</span>
             )}
           </button>
-        ))}
-      </nav>
+        );
+        const BotBtn = t => (
+          <button key={t.id} onClick={()=>setTab(t.id)}
+            className={`flex-1 flex flex-col items-center py-2 gap-0.5 transition-colors relative ${tab===t.id?'text-orange-400':'text-gray-500 hover:text-gray-300'}`}>
+            <span className="text-xl leading-none">{t.icon}</span>
+            <span className="text-[10px] font-semibold">{t.label}</span>
+            {t.badge > 0 && (
+              <span className="absolute top-1 right-[calc(50%-18px)] w-4 h-4 bg-orange-500 text-white text-[10px] font-black rounded-full flex items-center justify-center leading-none">{t.badge}</span>
+            )}
+          </button>
+        );
+        return (
+          <>
+            <nav className="pwa-top-nav flex border-b border-gray-800 bg-gray-900 sticky top-[65px] z-20">
+              {tabs.map(TopBtn)}
+            </nav>
+            <nav className="pwa-bottom-nav fixed bottom-0 left-0 right-0 z-30 bg-gray-900/95 backdrop-blur border-t border-gray-800">
+              <div className="max-w-lg mx-auto flex" style={{paddingBottom:'env(safe-area-inset-bottom)'}}>
+                {tabs.map(BotBtn)}
+              </div>
+            </nav>
+          </>
+        );
+      })()}
 
       {/* content */}
-      <main className="px-4 py-5 pb-28 space-y-5">
+      <main className="pwa-main px-4 py-5 pb-28 space-y-5">
         {tab === 'today' && (
           <>
             <div>
@@ -1559,7 +1589,7 @@ function MainApp({ currentMember, onLogout }) {
             setBookDefaultTime(nowStr);
             setShowBookModal(true);
           }}
-          className="fixed bottom-6 right-6 bg-orange-500 hover:bg-orange-400 text-white rounded-full w-14 h-14 text-2xl shadow-xl flex items-center justify-center z-40 transition-all active:scale-95">
+          className="pwa-fab fixed bottom-6 right-6 bg-orange-500 hover:bg-orange-400 text-white rounded-full w-14 h-14 text-2xl shadow-xl flex items-center justify-center z-40 transition-all active:scale-95">
           +
         </button>
       )}
