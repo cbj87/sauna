@@ -694,6 +694,22 @@ def admin_update_preset(name: str):
         db.close()
 
 
+@app.route("/api/admin/presets/<name>", methods=["DELETE"])
+def admin_delete_preset(name: str):
+    db, _, error = require_admin()
+    if error:
+        return error
+    try:
+        preset = db.query(Preset).filter_by(name=name).first()
+        if not preset:
+            return err("Preset not found", 404)
+        db.delete(preset)
+        db.commit()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
 @app.route("/api/sauna/preset/<name>", methods=["POST"])
 def apply_preset(name: str):
     db, member, error = require_auth()

@@ -562,8 +562,6 @@ function Controls({ status, bookings, members, presets = [], currentMember, onRe
         {[
           {label:'Heat', val: status?.heatOn, icon:'🔥'},
           {label:'Steam', val: status?.steamOn, icon:'💧'},
-          {label:'Light', val: status?.lightState, icon:'💡'},
-          {label:'Fan',   val: status?.fanState,   icon:'🌀'},
         ].map(({label,val,icon}) => (
           <div key={label} className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full ${val?'bg-orange-900 text-orange-300':'bg-gray-700 text-gray-500'}`}>
             {icon} {label}
@@ -861,6 +859,16 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
     finally { setBusy(false); }
   }
 
+  async function deletePreset(name) {
+    if (!confirm('Delete this preset?')) return;
+    setBusy(true);
+    try {
+      await api(`/api/admin/presets/${name}`, {method:'DELETE'});
+      onReloadPresets();
+    } catch(e) { alert(e.message); }
+    finally { setBusy(false); }
+  }
+
   useEffect(() => { load(); loadLog(); }, []);
 
   async function approve(id) {
@@ -1047,10 +1055,16 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
                   <div className="font-semibold">{p.label}</div>
                   <div className="text-xs text-gray-400">{p.target_temp_f}°F · {p.on_time} min{p.steam_en ? ' · steam' : ''}</div>
                 </div>
-                <button onClick={() => editPresetName === p.name ? setEditPresetName(null) : startEditPreset(p)}
-                  className="text-xs text-gray-500 hover:text-orange-400 font-semibold px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors">
-                  {editPresetName === p.name ? 'cancel' : 'edit'}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => editPresetName === p.name ? setEditPresetName(null) : startEditPreset(p)}
+                    className="text-xs text-gray-500 hover:text-orange-400 font-semibold px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors">
+                    {editPresetName === p.name ? 'cancel' : 'edit'}
+                  </button>
+                  <button onClick={() => deletePreset(p.name)} disabled={busy}
+                    className="text-xs text-gray-500 hover:text-red-400 font-semibold px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors disabled:opacity-50">
+                    delete
+                  </button>
+                </div>
               </div>
               {editPresetName === p.name && (
                 <div className="px-4 pb-4 pt-2 border-t border-gray-600/50 fade-in space-y-3">
