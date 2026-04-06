@@ -1158,6 +1158,85 @@ def cancel_booking(booking_id: int):
         db.close()
 
 
+@app.route("/api/bookings/<int:booking_id>", methods=["PUT"])
+def edit_booking(booking_id: int):
+    db_auth, member, error = require_auth()
+    if error:
+        return error
+    db_auth.close()
+
+    body = request.get_json(silent=True) or {}
+
+    db = SessionLocal()
+    try:
+        booking = db.query(Booking).filter_by(id=booking_id).first()
+        if not booking:
+            return err("Booking not found", 404)
+        if booking.member_id != member.id and not member.is_admin:
+            return err("Cannot edit someone else's booking", 403)
+        if booking.status != "scheduled":
+            return err(f"Cannot edit a booking with status '{booking.status}'")
+
+        try:
+            start = time.fromisoformat(body["start_time"]) if "start_time" in body else booking.start_time
+            end   = time.fromisoformat(body["end_time"])   if "end_time"   in body else booking.end_time
+        except ValueError as exc:
+            return err(f"Invalid time: {exc}")
+
+        if end == start:
+            return err("end_time must differ from start_time")
+
+        # Recalculate duration if times changed
+        if "on_time" in body:
+            on_time = int(body["on_time"])
+        elif end > start:
+            on_time = int((datetime.combine(booking.date, end) - datetime.combine(booking.date, start)).seconds / 60)
+        else:
+            on_time = int((datetime.combine(booking.date + timedelta(days=1), end) - datetime.combine(booking.date, start)).seconds / 60)
+
+        # Temperature
+        target_temp = booking.target_temp
+        if "target_temp_f" in body:
+            target_temp = max(40, min(110, int(f_to_c(float(body["target_temp_f"])))))
+        elif "target_temp" in body:
+            target_temp = max(40, min(110, int(body["target_temp"])))
+
+        # Overlap check — exclude the booking being edited
+        cooldown_start = (datetime.combine(booking.date, start) - timedelta(minutes=COOLDOWN_MINUTES)).time()
+        cooldown_end   = (datetime.combine(booking.date, end)   + timedelta(minutes=COOLDOWN_MINUTES)).time()
+        overlap = (
+            db.query(Booking)
+            .filter(
+                Booking.id != booking_id,
+                Booking.date == booking.date,
+                Booking.status != "cancelled",
+                Booking.start_time < cooldown_end,
+                Booking.end_time   > cooldown_start,
+            )
+            .first()
+        )
+        if overlap:
+            return err(
+                f"Overlaps with existing booking ({overlap.start_time.strftime('%H:%M')}–"
+                f"{overlap.end_time.strftime('%H:%M')}) including {COOLDOWN_MINUTES}-min cooldown"
+            )
+
+        booking.start_time = start
+        booking.end_time   = end
+        booking.on_time    = on_time
+        booking.target_temp = target_temp
+        # Reset preheat notification so it re-fires at the new time
+        booking.preheat_notified_at = None
+        db.commit()
+        db.refresh(booking)
+        return jsonify(booking.to_dict())
+    except IntegrityError:
+        db.rollback()
+        return err("Database error updating booking", 500)
+    finally:
+        db.close()
+
+
 @app.route("/api/bookings/<int:booking_id>/preheat", methods=["POST"])
 def preheat_booking(booking_id: int):
     db_auth, member, error = require_auth()

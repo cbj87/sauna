@@ -237,16 +237,18 @@ function BookingCard({ booking: b, member, onPress, onPreheat, canPreheat }) {
 }
 
 // ─── booking modal ────────────────────────────────────────────────────────────
-function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, onSave }) {
+function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, onSave, editingBooking }) {
   const now = new Date();
-  const [memberId, setMemberId] = useState(members[0]?.id || '');
-  const [startTime, setStartTime] = useState(defaultTime || timeStr(now));
-  const [durationMins, setDurationMins] = useState(60);
-  const [tempF, setTempF] = useState(194); // 90°C default
+  const isEditing = !!editingBooking;
 
-  const bookingDate = defaultDate || now.toISOString().slice(0,10);
+  const [memberId, setMemberId] = useState(isEditing ? editingBooking.member_id : (members[0]?.id || ''));
+  const [startTime, setStartTime] = useState(isEditing ? editingBooking.start_time : (defaultTime || timeStr(now)));
+  const [durationMins, setDurationMins] = useState(isEditing ? editingBooking.on_time : 60);
+  const [tempF, setTempF] = useState(isEditing ? cToF(editingBooking.target_temp) : 194);
+
+  const bookingDate = isEditing ? editingBooking.date : (defaultDate || now.toISOString().slice(0,10));
   const isToday = bookingDate === now.toISOString().slice(0,10);
-  const isPastTime = isToday && startTime < timeStr(now);
+  const isPastTime = !isEditing && isToday && startTime < timeStr(now);
 
   const endTime = (() => {
     const [h,m] = startTime.split(':').map(Number);
@@ -272,17 +274,17 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center p-4" onClick={onClose}>
       <div className="bg-gray-800 rounded-2xl w-full max-w-sm p-6 fade-in" onClick={e=>e.stopPropagation()}>
-        <h2 className="text-lg font-bold mb-4">Book a Session</h2>
+        <h2 className="text-lg font-bold mb-4">{isEditing ? 'Edit Session' : 'Book a Session'}</h2>
 
-        {/* member picker */}
+        {/* member picker — locked when editing */}
         <div className="mb-4">
           <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Who?</label>
           <div className="flex flex-wrap gap-2">
             {members.map(m => (
-              <button key={m.id}
-                className={`px-4 py-2 rounded-xl font-semibold text-sm transition-all ${memberId===m.id?'ring-2 ring-white':'opacity-60'}`}
+              <button key={m.id} disabled={isEditing}
+                className={`px-4 py-2 rounded-xl font-semibold text-sm transition-all ${memberId===m.id?'ring-2 ring-white':'opacity-60'} ${isEditing?'cursor-default':''}`}
                 style={{background: m.color+'44', color: m.color, border: `2px solid ${m.color}`}}
-                onClick={() => { setMemberId(m.id); const maxF = m.max_temp ? cToF(m.max_temp) : 230; setTempF(Math.min(cToF(m.default_temp), maxF)); setDurationMins(m.default_time); }}>
+                onClick={() => { if(isEditing) return; setMemberId(m.id); const maxF = m.max_temp ? cToF(m.max_temp) : 230; setTempF(Math.min(cToF(m.default_temp), maxF)); setDurationMins(m.default_time); }}>
                 {m.name}
               </button>
             ))}
@@ -297,12 +299,12 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
           {isPastTime && <p className="text-red-400 text-xs mt-1.5">⚠ That time has already passed today</p>}
         </div>
 
-        {/* existing bookings for this date */}
-        {bookings && bookings.length > 0 && (
+        {/* existing bookings for this date (exclude self when editing) */}
+        {bookings && bookings.filter(b => !isEditing || b.id !== editingBooking.id).length > 0 && (
           <div className="mb-4">
             <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Already booked</label>
             <div className="space-y-1">
-              {bookings.map(b => (
+              {bookings.filter(b => !isEditing || b.id !== editingBooking.id).map(b => (
                 <div key={b.id} className="flex items-center gap-2 px-3 py-1.5 bg-gray-700/50 rounded-lg">
                   <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background: b.member_color || '#6B7280'}} />
                   <span className="text-sm text-gray-300 font-medium truncate">{b.member_name}</span>
@@ -343,7 +345,7 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
           <button onClick={handleSave} disabled={isPastTime}
             style={{background: isPastTime ? undefined : (selectedMember?.color || '#f97316')}}
             className={`flex-1 text-white py-3 rounded-xl font-bold transition-opacity ${isPastTime ? 'bg-gray-600 opacity-50 cursor-not-allowed' : ''}`}>
-            Book It
+            {isEditing ? 'Save Changes' : 'Book It'}
           </button>
         </div>
       </div>
@@ -352,11 +354,12 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
 }
 
 // ─── slot detail modal ────────────────────────────────────────────────────────
-function SlotModal({ booking, onClose, onCancel, onPreheat }) {
+function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit }) {
   const now = new Date();
   const bookingStart = new Date(`${booking.date}T${booking.start_time}`);
   const minsUntil = (bookingStart - now) / 60000;
   const canPreheat = booking.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0;
+  const canEdit = booking.status === 'scheduled';
   const color = booking.member_color || '#f97316';
 
   return (
@@ -377,6 +380,12 @@ function SlotModal({ booking, onClose, onCancel, onPreheat }) {
             <button onClick={()=>onPreheat(booking.id)}
               className="w-full bg-orange-500 hover:bg-orange-400 text-white py-3 rounded-xl font-bold text-base">
               🔥 Start Preheat
+            </button>
+          )}
+          {canEdit && (
+            <button onClick={()=>onEdit(booking)}
+              className="w-full bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-xl font-semibold">
+              ✏️ Edit Booking
             </button>
           )}
           {booking.status !== 'completed' && booking.status !== 'cancelled' && (
@@ -1459,6 +1468,17 @@ function MainApp({ currentMember, onLogout }) {
     } catch(e) { toast(e.message, 'error'); }
   }
 
+  const [editingBooking, setEditingBooking] = useState(null);
+
+  async function handleEditBooking(id, data) {
+    try {
+      await api(`/api/bookings/${id}`, {method:'PUT', body:data});
+      toast('Booking updated!', 'success');
+      setEditingBooking(null);
+      loadBookings();
+    } catch(e) { toast(e.message, 'error'); }
+  }
+
   async function handlePreheat(id) {
     try {
       await api(`/api/bookings/${id}/preheat`, {method:'POST'});
@@ -1698,6 +1718,16 @@ function MainApp({ currentMember, onLogout }) {
           onClose={()=>setSelectedSlot(null)}
           onCancel={handleCancelBooking}
           onPreheat={handlePreheat}
+          onEdit={b => { setSelectedSlot(null); setEditingBooking(b); }}
+        />
+      )}
+      {editingBooking && (
+        <BookingModal
+          editingBooking={editingBooking}
+          members={members}
+          bookings={bookings}
+          onClose={() => setEditingBooking(null)}
+          onSave={data => handleEditBooking(editingBooking.id, data)}
         />
       )}
 
