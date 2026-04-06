@@ -1227,8 +1227,15 @@ function MainApp({ currentMember, onLogout }) {
     });
   }, []);
 
+  async function sendTestNotification() {
+    try {
+      await api('/api/push/test', { method: 'POST' });
+      toast('Test notification sent — check your phone!', 'success');
+    } catch(e) { toast(e.message, 'error'); }
+  }
+
   async function subscribePush() {
-    if (!vapidKey) return;
+    if (!vapidKey) { toast('Push notifications are not configured on the server', 'error'); return; }
     if (notifState === 'subscribed') {
       // Toggle off
       try {
@@ -1310,13 +1317,23 @@ function MainApp({ currentMember, onLogout }) {
           <div className="flex items-center gap-2">
             <StatusPill status={status} />
             {vapidKey && notifState !== 'unsupported' && notifState !== 'loading' && (
-              <button
-                onClick={subscribePush}
-                title={notifState === 'subscribed' ? 'Reminders on — tap to disable' : notifState === 'denied' ? 'Notifications blocked in browser settings' : 'Enable preheat reminders'}
-                className={`text-base px-1.5 py-1 rounded-lg transition-colors ${notifState === 'subscribed' ? 'text-orange-400 hover:bg-gray-800' : notifState === 'denied' ? 'text-red-500 opacity-60 cursor-not-allowed' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-                disabled={notifState === 'denied'}>
-                {notifState === 'subscribed' ? '🔔' : notifState === 'denied' ? '🔕' : '🔔'}
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={subscribePush}
+                  title={notifState === 'subscribed' ? 'Reminders on — tap to disable' : notifState === 'denied' ? 'Notifications blocked in browser settings' : 'Enable preheat reminders'}
+                  className={`text-base px-1.5 py-1 rounded-lg transition-colors ${notifState === 'subscribed' ? 'text-orange-400 hover:bg-gray-800' : notifState === 'denied' ? 'text-red-500 opacity-60 cursor-not-allowed' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+                  disabled={notifState === 'denied'}>
+                  {notifState === 'subscribed' ? '🔔' : notifState === 'denied' ? '🔕' : '🔔'}
+                </button>
+                {notifState === 'subscribed' && (
+                  <button
+                    onClick={sendTestNotification}
+                    title="Send a test notification to verify setup"
+                    className="text-[10px] font-semibold text-gray-600 hover:text-orange-400 px-1 py-1 rounded transition-colors">
+                    test
+                  </button>
+                )}
+              </div>
             )}
             <button onClick={onLogout} title={`Logout ${currentMember?.name}`}
               className="text-xs text-gray-500 hover:text-gray-300 font-semibold px-2 py-1 rounded-lg hover:bg-gray-800 transition-colors">

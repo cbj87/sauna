@@ -927,6 +927,51 @@ def push_unsubscribe():
         db.close()
 
 
+@app.route("/api/push/test", methods=["POST"])
+def push_test():
+    """Send a test push notification to the current user. Useful for verifying the setup end-to-end."""
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        if not VAPID_PRIVATE_KEY:
+            return err("VAPID_PRIVATE_KEY is not configured on the server")
+
+        subs = db.query(PushSubscription).filter_by(member_id=member.id).all()
+        if not subs:
+            return err("No push subscriptions found for your account — enable notifications first")
+
+        sent, failed, dead = 0, 0, []
+        for sub in subs:
+            result = _send_push(
+                {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
+                {
+                    "title": "🛖 Sweat Box test",
+                    "body": f"Hey {member.name}! Push notifications are working.",
+                    "tag": "push-test",
+                    "url": "/",
+                },
+            )
+            if result is True:
+                sent += 1
+            elif result == 410:
+                dead.append(sub.endpoint)
+                failed += 1
+            else:
+                failed += 1
+
+        for ep in dead:
+            db.query(PushSubscription).filter_by(endpoint=ep).delete()
+        if dead:
+            db.commit()
+
+        if sent == 0:
+            return err(f"Notification delivery failed on all {failed} subscription(s) — check server logs"), 502
+        return jsonify({"ok": True, "sent": sent, "failed": failed})
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Booking routes (require auth)
 # ---------------------------------------------------------------------------
