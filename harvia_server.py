@@ -339,11 +339,12 @@ def check_preheat_reminders():
         )
 
         for booking in pending:
-            preheat_min = booking.on_time or 30
-            # Notify preheat_min + 5 minutes before start so there's time to react
-            notify_before = preheat_min + 5
+            # Notify 35 min before start (30 min to heat up + 5 min to react).
+            # We intentionally do NOT use booking.on_time here — that is the
+            # session *duration*, not the preheat lead time.
+            NOTIFY_BEFORE_MINUTES = 35
             start_dt = datetime.combine(booking.date, booking.start_time)
-            notify_at = start_dt - timedelta(minutes=notify_before)
+            notify_at = start_dt - timedelta(minutes=NOTIFY_BEFORE_MINUTES)
 
             if now < notify_at or now >= start_dt:
                 continue
