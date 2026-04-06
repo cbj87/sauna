@@ -81,6 +81,11 @@ function ToastStack({ toasts }) {
   );
 }
 
+// ─── skeleton ────────────────────────────────────────────────────────────────
+function Skeleton({ className = '' }) {
+  return <div className={`bg-gray-700/60 rounded-xl animate-pulse ${className}`} />;
+}
+
 // ─── status pill ─────────────────────────────────────────────────────────────
 function StatusPill({ status }) {
   if (!status) return <span className="status-pill bg-gray-700 text-gray-400">Loading…</span>;
@@ -94,94 +99,113 @@ function StatusPill({ status }) {
 }
 
 // ─── timeline ────────────────────────────────────────────────────────────────
-const HOUR_START = 6;   // 6 AM
-const HOUR_END   = 23;  // 11 PM
-const TOTAL_HOURS = HOUR_END - HOUR_START;
+function Timeline({ bookings, members, onSlotClick, onEmptyClick, selectedMemberId, loading }) {
+  // Dynamic window: pad 1 hr either side of the actual bookings; fall back to 7am–10pm
+  const toHr = t => { const [h, m] = t.split(':').map(Number); return h + m / 60; };
+  let hourStart, hourEnd;
+  if (bookings.length > 0) {
+    const starts = bookings.map(b => toHr(b.start_time));
+    const ends   = bookings.map(b => toHr(b.end_time));
+    hourStart = Math.max(5, Math.floor(Math.min(...starts)) - 1);
+    hourEnd   = Math.min(24, Math.ceil(Math.max(...ends))  + 1);
+  } else {
+    hourStart = 7;
+    hourEnd   = 22;
+  }
+  const totalHours = hourEnd - hourStart;
+  const timeToFrac = t => { const [h, m] = t.split(':').map(Number); return (h + m/60 - hourStart) / totalHours; };
 
-function timeToFrac(t) {
-  const [h, m] = t.split(':').map(Number);
-  return (h + m/60 - HOUR_START) / TOTAL_HOURS;
-}
-
-function Timeline({ bookings, members, onSlotClick, onEmptyClick, selectedMemberId }) {
-  const hours = Array.from({length: TOTAL_HOURS + 1}, (_, i) => HOUR_START + i);
-  const now = new Date();
-  const nowFrac = (now.getHours() + now.getMinutes()/60 - HOUR_START) / TOTAL_HOURS;
+  const hours  = Array.from({length: totalHours + 1}, (_, i) => hourStart + i);
+  const now    = new Date();
+  const nowFrac = (now.getHours() + now.getMinutes() / 60 - hourStart) / totalHours;
   const showNow = nowFrac >= 0 && nowFrac <= 1;
+
+  // Inner canvas height: 44px per hour gives comfortable tap targets
+  const canvasH = Math.max(totalHours * 44, 300);
 
   function handleClick(e) {
     const rect = e.currentTarget.getBoundingClientRect();
     const frac = (e.clientY - rect.top) / rect.height;
-    const totalMins = HOUR_START * 60 + frac * TOTAL_HOURS * 60;
+    const totalMins = hourStart * 60 + frac * totalHours * 60;
     const h = Math.floor(totalMins / 60);
     const m = Math.round((totalMins % 60) / 15) * 15;
-    const snapped = `${pad(h === 24 ? 23 : h)}:${pad(m === 60 ? 45 : m)}`;
+    const snapped = `${pad(h >= 24 ? 23 : h)}:${pad(m === 60 ? 45 : m)}`;
     onEmptyClick(snapped);
   }
 
   return (
-    <div className="relative bg-gray-800 rounded-2xl overflow-hidden" style={{height: 480}}>
-      {/* hour grid */}
-      {hours.map(h => (
-        <div key={h} className="absolute w-full border-t border-gray-700/60 flex items-center"
-          style={{top: `${((h - HOUR_START) / TOTAL_HOURS)*100}%`}}>
-          <span className="text-xs text-gray-500 pl-2 -mt-3">{h === 12?'12 PM': h<12?`${h} AM`: h===24?'12 AM':`${h-12} PM`}</span>
-        </div>
-      ))}
-
-      {/* click target */}
-      <div className="absolute inset-0 cursor-pointer" onClick={handleClick} />
-
-      {/* empty state */}
-      {bookings.length === 0 && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <div className="text-4xl mb-2">🛖</div>
-          <p className="text-gray-500 text-sm font-semibold">No bookings today</p>
-          <p className="text-gray-600 text-xs mt-1">Tap anywhere to add one</p>
-        </div>
-      )}
-
-      {/* bookings */}
-      {bookings.map(b => {
-        const top = timeToFrac(b.start_time);
-        const bot = timeToFrac(b.end_time);
-        if (top >= 1 || bot <= 0) return null;
-        const member = members.find(m => m.id === b.member_id);
-        const color = member?.color || '#6B7280';
-        const tempF = cToF(b.target_temp);
-        return (
-          <div key={b.id} className="timeline-slot z-10 pointer-events-auto"
-            style={{
-              top: `${Math.max(0,top)*100}%`,
-              height: `${Math.min(1,bot-top)*100}%`,
-              left: '52px', right: '8px',
-              background: color + '33',
-              borderLeft: `4px solid ${color}`,
-              color: color,
-            }}
-            onClick={e => { e.stopPropagation(); onSlotClick(b); }}>
-            <div className="font-bold truncate">{b.member_name}</div>
-            <div className="opacity-80">{b.start_time}–{b.end_time} · {fmt(tempF)}°F</div>
-            {b.status !== 'scheduled' && <div className="capitalize opacity-60">{b.status}</div>}
+    <div className="rounded-2xl overflow-auto bg-gray-800" style={{maxHeight: 'min(520px, 68vh)'}}>
+      <div className="relative" style={{height: canvasH}}>
+        {/* hour grid */}
+        {hours.map(h => (
+          <div key={h} className="absolute w-full border-t border-gray-700/60 flex items-center"
+            style={{top: `${((h - hourStart) / totalHours) * 100}%`}}>
+            <span className="text-xs text-gray-500 pl-2 -mt-3 select-none">
+              {h === 12 ? '12 PM' : h < 12 ? `${h} AM` : h === 24 ? '12 AM' : `${h-12} PM`}
+            </span>
           </div>
-        );
-      })}
+        ))}
 
-      {/* now line */}
-      {showNow && (
-        <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{top: `${nowFrac*100}%`}}>
-          <div className="flex items-center">
-            <div className="w-2 h-2 rounded-full bg-orange-400 ml-10 -mt-1" />
-            <div className="flex-1 border-t-2 border-orange-400 border-dashed opacity-70" />
+        {/* click target */}
+        <div className="absolute inset-0 cursor-pointer" onClick={handleClick} />
+
+        {/* loading state */}
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <span className="text-gray-600 text-sm animate-pulse">Loading schedule…</span>
           </div>
-        </div>
-      )}
+        )}
+
+        {/* empty state — only when confirmed loaded */}
+        {!loading && bookings.length === 0 && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <div className="text-4xl mb-2">🛖</div>
+            <p className="text-gray-500 text-sm font-semibold">No bookings yet</p>
+            <p className="text-gray-600 text-xs mt-1">Tap anywhere to add one</p>
+          </div>
+        )}
+
+        {/* bookings */}
+        {bookings.map(b => {
+          const top = timeToFrac(b.start_time);
+          const bot = timeToFrac(b.end_time);
+          if (top >= 1 || bot <= 0) return null;
+          const member = members.find(m => m.id === b.member_id);
+          const color = member?.color || '#6B7280';
+          return (
+            <div key={b.id} className="timeline-slot z-10 pointer-events-auto"
+              style={{
+                top: `${Math.max(0, top) * 100}%`,
+                height: `${Math.max(0.02, Math.min(1, bot - top)) * 100}%`,
+                left: '52px', right: '8px',
+                background: color + '33',
+                borderLeft: `4px solid ${color}`,
+                color: color,
+              }}
+              onClick={e => { e.stopPropagation(); onSlotClick(b); }}>
+              <div className="font-bold truncate">{b.member_name}</div>
+              <div className="opacity-80">{b.start_time}–{b.end_time} · {fmt(cToF(b.target_temp))}°F</div>
+              {b.status !== 'scheduled' && <div className="capitalize opacity-60">{b.status}</div>}
+            </div>
+          );
+        })}
+
+        {/* now line */}
+        {showNow && (
+          <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{top: `${nowFrac * 100}%`}}>
+            <div className="flex items-center">
+              <div className="w-2 h-2 rounded-full bg-orange-400 ml-10 -mt-1" />
+              <div className="flex-1 border-t-2 border-orange-400 border-dashed opacity-70" />
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 // ─── booking modal ────────────────────────────────────────────────────────────
-function BookingModal({ defaultTime, defaultDate, members, onClose, onSave }) {
+function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, onSave }) {
   const now = new Date();
   const [memberId, setMemberId] = useState(members[0]?.id || '');
   const [startTime, setStartTime] = useState(defaultTime || timeStr(now));
@@ -235,6 +259,22 @@ function BookingModal({ defaultTime, defaultDate, members, onClose, onSave }) {
           <input type="time" value={startTime} onChange={e=>setStartTime(e.target.value)}
             className="w-full bg-gray-700 rounded-xl px-4 py-3 text-white text-lg font-semibold" />
         </div>
+
+        {/* existing bookings for this date */}
+        {bookings && bookings.length > 0 && (
+          <div className="mb-4">
+            <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Already booked</label>
+            <div className="space-y-1">
+              {bookings.map(b => (
+                <div key={b.id} className="flex items-center gap-2 px-3 py-1.5 bg-gray-700/50 rounded-lg">
+                  <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background: b.member_color || '#6B7280'}} />
+                  <span className="text-sm text-gray-300 font-medium truncate">{b.member_name}</span>
+                  <span className="text-xs text-gray-500 ml-auto flex-shrink-0">{b.start_time}–{b.end_time}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* duration */}
         <div className="mb-4">
@@ -1157,6 +1197,7 @@ function MainApp({ currentMember, onLogout }) {
 
   const today = new Date().toISOString().slice(0,10);
   const [viewDate, setViewDate] = useState(today);
+  const [bookingsLoading, setBookingsLoading] = useState(true);
 
   async function loadStatus() {
     try {
@@ -1168,10 +1209,13 @@ function MainApp({ currentMember, onLogout }) {
   }
 
   async function loadBookings(date = viewDate) {
+    setBookingsLoading(true);
     try {
       const b = await api(`/api/bookings?date=${date}`);
       setBookings(b);
-    } catch {}
+    } catch {} finally {
+      setBookingsLoading(false);
+    }
   }
 
   useEffect(() => { loadBookings(viewDate); }, [viewDate]);
@@ -1456,12 +1500,17 @@ function MainApp({ currentMember, onLogout }) {
                 onSlotClick={setSelectedSlot}
                 onEmptyClick={handleEmptyTimelineClick}
                 selectedMemberId={null}
+                loading={bookingsLoading}
               />
-              <p className="text-xs text-gray-600 mt-2 text-center">Tap an empty area to book a slot</p>
             </div>
 
-            {/* upcoming list */}
-            {bookings.length > 0 && (
+            {/* upcoming list — skeletons while loading, real rows after */}
+            {bookingsLoading ? (
+              <div className="space-y-2">
+                <Skeleton className="h-16" />
+                <Skeleton className="h-16" />
+              </div>
+            ) : bookings.length > 0 ? (
               <div className="space-y-2">
                 {bookings.map(b => {
                   const color = b.member_color || '#6B7280';
@@ -1485,7 +1534,7 @@ function MainApp({ currentMember, onLogout }) {
                   );
                 })}
               </div>
-            )}
+            ) : null}
           </>
         )}
 
@@ -1521,6 +1570,7 @@ function MainApp({ currentMember, onLogout }) {
           defaultTime={bookDefaultTime}
           defaultDate={viewDate}
           members={members}
+          bookings={bookings}
           onClose={()=>setShowBookModal(false)}
           onSave={handleCreateBooking}
         />

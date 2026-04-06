@@ -51,11 +51,11 @@
 
 ## 🎨 UI Improvements
 
-- [ ] **Mobile timeline height** — fixed 480px height is cramped on small phones; make it responsive or scrollable
-- [ ] **Timeline hours are hard-coded to 6 AM–11 PM** — make the window configurable, or at minimum dynamic (collapse to first/last booking ± 1 hour)
-- [ ] **Show existing bookings inside BookingModal** — a mini timeline or list of today's bookings so users can see what's already taken before picking a time
-- [ ] **Empty state for schedule** — "No bookings today — tap to add one" message instead of just a blank timeline
-- [ ] **Loading skeletons** — replace blank/pulse states with skeleton cards so the layout doesn't jump when data loads
+- [x] **Mobile timeline height** — inner canvas is 44px/hr (scales with window size); outer container is `min(520px, 68vh)` with `overflow-y: auto` so it scrolls on small phones without cutting off content
+- [x] **Timeline hours are dynamic** — window computed from actual bookings (min start − 1hr to max end + 1hr, clamped to 5am–midnight); falls back to 7am–10pm when no bookings; hour grid and click-to-book math all update accordingly
+- [x] **Existing bookings shown in BookingModal** — "Already booked" section lists all bookings for the selected date with member colour dot, name, and time range; only shown when there are bookings to display
+- [x] **Empty state for schedule** — Timeline shows 🛖 "No bookings yet / Tap anywhere to add one" only after loading completes; not shown during initial fetch (avoids flash of empty content)
+- [x] **Loading skeletons** — `bookingsLoading` state added to MainApp; `loadBookings` sets it true/false around the fetch; Timeline receives `loading` prop and shows "Loading schedule…" pulse instead of empty state; booking list below shows two skeleton rows while loading
 - [ ] **Colour conflict warning** — warn or prevent two members from using the same timeline colour so the schedule stays readable
 - [ ] **Dark/light mode** — currently hard-coded dark; could follow system preference
 - [ ] **Swipe between days** — swipe left/right on the timeline to move between the 7-day pill dates on mobile
