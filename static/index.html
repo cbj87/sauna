@@ -109,105 +109,127 @@ function StatusPill({ status }) {
 }
 
 // ─── timeline ────────────────────────────────────────────────────────────────
-function Timeline({ bookings, members, onSlotClick, onEmptyClick, selectedMemberId, loading }) {
-  // Dynamic window: pad 1 hr either side of the actual bookings; fall back to 7am–10pm
-  const toHr = t => { const [h, m] = t.split(':').map(Number); return h + m / 60; };
-  let hourStart, hourEnd;
-  if (bookings.length > 0) {
-    const starts = bookings.map(b => toHr(b.start_time));
-    const ends   = bookings.map(b => toHr(b.end_time));
-    hourStart = Math.max(5, Math.floor(Math.min(...starts)) - 1);
-    hourEnd   = Math.min(24, Math.ceil(Math.max(...ends))  + 1);
-  } else {
-    hourStart = 7;
-    hourEnd   = 22;
-  }
-  const totalHours = hourEnd - hourStart;
-  const timeToFrac = t => { const [h, m] = t.split(':').map(Number); return (h + m/60 - hourStart) / totalHours; };
+// ─── day strip ───────────────────────────────────────────────────────────────
+// Thin horizontal overview bar: 6 AM → midnight, colored blocks, now-line.
+function DayStrip({ bookings, members, onSlotClick, onEmptyClick, loading }) {
+  const STRIP_START = 6;
+  const STRIP_END   = 24;
+  const TOTAL_HRS   = STRIP_END - STRIP_START;
 
-  const hours  = Array.from({length: totalHours + 1}, (_, i) => hourStart + i);
-  const now    = new Date();
-  const nowFrac = (now.getHours() + now.getMinutes() / 60 - hourStart) / totalHours;
+  const toFrac = t => {
+    const [h, m] = t.split(':').map(Number);
+    return Math.max(0, Math.min(1, (h + m / 60 - STRIP_START) / TOTAL_HRS));
+  };
+
+  const now = new Date();
+  const nowFrac = (now.getHours() + now.getMinutes() / 60 - STRIP_START) / TOTAL_HRS;
   const showNow = nowFrac >= 0 && nowFrac <= 1;
-
-  // Inner canvas height: 44px per hour gives comfortable tap targets
-  const canvasH = Math.max(totalHours * 44, 300);
 
   function handleClick(e) {
     const rect = e.currentTarget.getBoundingClientRect();
-    const frac = (e.clientY - rect.top) / rect.height;
-    const totalMins = hourStart * 60 + frac * totalHours * 60;
+    const frac = (e.clientX - rect.left) / rect.width;
+    const totalMins = (STRIP_START + frac * TOTAL_HRS) * 60;
     const h = Math.floor(totalMins / 60);
     const m = Math.round((totalMins % 60) / 15) * 15;
-    const snapped = `${pad(h >= 24 ? 23 : h)}:${pad(m === 60 ? 45 : m)}`;
-    onEmptyClick(snapped);
+    onEmptyClick(`${pad(h >= 24 ? 23 : h)}:${pad(m >= 60 ? 45 : m)}`);
   }
 
+  // Hour tick marks: every 3 hours (6, 9, 12, 15, 18, 21, 24)
+  const ticks = Array.from({length: TOTAL_HRS + 1}, (_, i) => STRIP_START + i).filter(h => h % 3 === 0);
+
   return (
-    <div className="rounded-2xl overflow-auto bg-gray-800" style={{maxHeight: 'min(520px, 68vh)'}}>
-      <div className="relative" style={{height: canvasH}}>
-        {/* hour grid */}
-        {hours.map(h => (
-          <div key={h} className="absolute w-full border-t border-gray-700/60 flex items-center"
-            style={{top: `${((h - hourStart) / totalHours) * 100}%`}}>
-            <span className="text-xs text-gray-500 pl-2 -mt-3 select-none">
-              {h === 12 ? '12 PM' : h < 12 ? `${h} AM` : h === 24 ? '12 AM' : `${h-12} PM`}
-            </span>
+    <div className="mb-4">
+      <div className="relative bg-gray-800 rounded-xl overflow-hidden cursor-pointer select-none"
+        style={{height: 44}} onClick={handleClick}>
+
+        {/* hour ticks */}
+        {ticks.map(h => (
+          <div key={h} className="absolute top-0 bottom-0 pointer-events-none"
+            style={{left: `${((h - STRIP_START) / TOTAL_HRS) * 100}%`}}>
+            <div className="w-px h-2 bg-gray-600/80 mt-auto" style={{marginTop: 26}} />
           </div>
         ))}
 
-        {/* click target */}
-        <div className="absolute inset-0 cursor-pointer" onClick={handleClick} />
-
-        {/* loading state */}
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <span className="text-gray-600 text-sm animate-pulse">Loading schedule…</span>
-          </div>
-        )}
-
-        {/* empty state — only when confirmed loaded */}
-        {!loading && bookings.length === 0 && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-            <div className="text-4xl mb-2">🛖</div>
-            <p className="text-gray-500 text-sm font-semibold">No bookings yet</p>
-            <p className="text-gray-600 text-xs mt-1">Tap anywhere to add one</p>
-          </div>
-        )}
-
-        {/* bookings */}
-        {bookings.map(b => {
-          const top = timeToFrac(b.start_time);
-          const bot = timeToFrac(b.end_time);
-          if (top >= 1 || bot <= 0) return null;
-          const member = members.find(m => m.id === b.member_id);
-          const color = member?.color || '#6B7280';
+        {/* booking blocks */}
+        {!loading && bookings.map(b => {
+          const left  = toFrac(b.start_time);
+          // Midnight-spanning: end_time < start_time → block goes to right edge
+          const rightT = b.end_time < b.start_time ? '24:00' : b.end_time;
+          const right = b.end_time < b.start_time ? 1 : toFrac(b.end_time);
+          if (left >= 1) return null;
+          const bMember = members.find(m => m.id === b.member_id);
+          const color = bMember?.color || b.member_color || '#6B7280';
           return (
-            <div key={b.id} className="timeline-slot z-10 pointer-events-auto"
+            <div key={b.id}
+              className="absolute top-1.5 bottom-1.5 rounded cursor-pointer transition-opacity hover:opacity-100"
               style={{
-                top: `${Math.max(0, top) * 100}%`,
-                height: `${Math.max(0.02, Math.min(1, bot - top)) * 100}%`,
-                left: '52px', right: '8px',
-                background: color + '33',
-                borderLeft: `4px solid ${color}`,
-                color: color,
+                left: `${left * 100}%`,
+                width: `${Math.max(0.01, right - left) * 100}%`,
+                background: color + 'aa',
+                borderLeft: `2px solid ${color}`,
+                opacity: b.status === 'cancelled' ? 0.3 : 0.85,
               }}
-              onClick={e => { e.stopPropagation(); onSlotClick(b); }}>
-              <div className="font-bold truncate">{b.member_name}</div>
-              <div className="opacity-80">{b.start_time}–{b.end_time} · {fmt(cToF(b.target_temp))}°F</div>
-              {b.status !== 'scheduled' && <div className="capitalize opacity-60">{b.status}</div>}
-            </div>
+              onClick={e => { e.stopPropagation(); onSlotClick(b); }}
+            />
           );
         })}
 
-        {/* now line */}
+        {/* loading shimmer */}
+        {loading && <div className="absolute inset-0 bg-gray-700/50 animate-pulse" />}
+
+        {/* now indicator */}
         {showNow && (
-          <div className="absolute left-0 right-0 z-20 pointer-events-none" style={{top: `${nowFrac * 100}%`}}>
-            <div className="flex items-center">
-              <div className="w-2 h-2 rounded-full bg-orange-400 ml-10 -mt-1" />
-              <div className="flex-1 border-t-2 border-orange-400 border-dashed opacity-70" />
-            </div>
+          <div className="absolute top-0 bottom-0 w-0.5 bg-orange-400 z-10 pointer-events-none"
+            style={{left: `${nowFrac * 100}%`}} />
+        )}
+      </div>
+
+      {/* axis labels */}
+      <div className="flex justify-between text-[9px] text-gray-600 mt-0.5 px-0.5 pointer-events-none select-none">
+        <span>6 AM</span><span>9</span><span>Noon</span><span>3 PM</span><span>6 PM</span><span>9</span><span>Mid</span>
+      </div>
+    </div>
+  );
+}
+
+// ─── booking card ─────────────────────────────────────────────────────────────
+function BookingCard({ booking: b, member, onPress, onPreheat, canPreheat }) {
+  const color = member?.color || b.member_color || '#6B7280';
+  const statusCls = {
+    active:     'bg-green-800/80 text-green-300',
+    preheating: 'bg-orange-900/80 text-orange-300',
+    completed:  'bg-gray-700 text-gray-500',
+    cancelled:  'bg-red-950 text-red-400',
+    scheduled:  'bg-gray-700/80 text-gray-300',
+  };
+  const isPulsing = b.status === 'active' || b.status === 'preheating';
+
+  // Format "23:00 – 01:00 (next day)" for midnight-spanning
+  const timeLabel = b.end_time < b.start_time
+    ? `${b.start_time} – ${b.end_time} (next day)`
+    : `${b.start_time} – ${b.end_time}`;
+
+  return (
+    <div className="bg-gray-800 rounded-2xl overflow-hidden cursor-pointer active:bg-gray-750 transition-colors fade-in"
+      style={{borderLeft: `4px solid ${color}`}}
+      onClick={onPress}>
+      <div className="px-4 py-3 flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+            <span className="font-bold text-sm leading-none" style={{color}}>{b.member_name}</span>
+            <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold capitalize leading-none ${statusCls[b.status] || statusCls.scheduled} ${isPulsing ? 'pulse' : ''}`}>
+              {b.status}
+            </span>
           </div>
+          <div className="text-white font-semibold text-sm">{timeLabel}</div>
+          <div className="text-xs text-gray-500 mt-0.5">{fmt(cToF(b.target_temp))}°F · {b.on_time} min</div>
+        </div>
+        {canPreheat && (
+          <button
+            onClick={e => { e.stopPropagation(); onPreheat(); }}
+            className="flex-shrink-0 bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white text-xs font-bold px-3 py-2 rounded-xl transition-colors">
+            🔥 Preheat
+          </button>
         )}
       </div>
     </div>
@@ -308,6 +330,7 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
 
         <div className="text-xs text-gray-500 mb-4">
           Ends at <strong className="text-gray-300">{endTime}</strong>
+          {endTime <= startTime && <span className="text-orange-400 ml-1">(next day)</span>}
         </div>
 
         <div className="flex gap-3">
@@ -337,7 +360,7 @@ function SlotModal({ booking, onClose, onCancel, onPreheat }) {
           <h2 className="text-lg font-bold">{booking.member_name}'s Session</h2>
         </div>
         <div className="space-y-2 text-sm text-gray-300 mb-6">
-          <div>{booking.date} · {booking.start_time}–{booking.end_time}</div>
+          <div>{booking.date} · {booking.start_time}–{booking.end_time}{booking.end_time < booking.start_time ? ' (next day)' : ''}</div>
           <div>Temp: {cToF(booking.target_temp)}°F ({booking.target_temp}°C)</div>
           <div>Duration: {booking.on_time} min</div>
           <div className="capitalize">Status: <span className="font-semibold text-white">{booking.status}</span></div>
@@ -1556,70 +1579,72 @@ function MainApp({ currentMember, onLogout }) {
       <main className="pwa-main px-4 py-5 pb-28 space-y-5">
         {tab === 'today' && (
           <>
-            <div>
-              {/* 7-day selector */}
-              <div className="flex gap-2 overflow-x-auto pb-1 mb-3 scrollbar-hide">
-                {Array.from({length: 7}, (_, i) => {
-                  const d = new Date(); d.setDate(d.getDate() + i);
-                  const iso = d.toISOString().slice(0,10);
-                  const isToday = i === 0;
-                  const active = viewDate === iso;
-                  return (
-                    <button key={iso} onClick={() => setViewDate(iso)}
-                      className={`flex-shrink-0 flex flex-col items-center px-3 py-2 rounded-xl text-xs font-semibold transition-all ${active ? 'bg-orange-500 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-                      <span className="uppercase tracking-wide text-[10px]">{isToday ? 'Today' : d.toLocaleDateString('en-US',{weekday:'short'})}</span>
-                      <span className="text-base font-black leading-tight">{d.getDate()}</span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex justify-between items-center mb-3">
-                <h2 className="font-bold text-base">
-                  {new Date(viewDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}
-                </h2>
-                <button onClick={() => loadBookings(viewDate)} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
-              </div>
-              <Timeline
-                bookings={bookings}
-                members={members}
-                onSlotClick={setSelectedSlot}
-                onEmptyClick={handleEmptyTimelineClick}
-                selectedMemberId={null}
-                loading={bookingsLoading}
-              />
+            {/* 7-day selector */}
+            <div className="flex gap-2 overflow-x-auto pb-1 mb-3 scrollbar-hide">
+              {Array.from({length: 7}, (_, i) => {
+                const d = new Date(); d.setDate(d.getDate() + i);
+                const iso = d.toISOString().slice(0,10);
+                const isToday = i === 0;
+                const active = viewDate === iso;
+                return (
+                  <button key={iso} onClick={() => setViewDate(iso)}
+                    className={`flex-shrink-0 flex flex-col items-center px-3 py-2 rounded-xl text-xs font-semibold transition-all ${active ? 'bg-orange-500 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
+                    <span className="uppercase tracking-wide text-[10px]">{isToday ? 'Today' : d.toLocaleDateString('en-US',{weekday:'short'})}</span>
+                    <span className="text-base font-black leading-tight">{d.getDate()}</span>
+                  </button>
+                );
+              })}
             </div>
 
-            {/* upcoming list — skeletons while loading, real rows after */}
+            {/* date heading + refresh */}
+            <div className="flex justify-between items-center mb-3">
+              <h2 className="font-bold text-base">
+                {new Date(viewDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}
+              </h2>
+              <button onClick={() => loadBookings(viewDate)} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
+            </div>
+
+            {/* horizontal day strip */}
+            <DayStrip
+              bookings={bookings}
+              members={members}
+              onSlotClick={setSelectedSlot}
+              onEmptyClick={handleEmptyTimelineClick}
+              loading={bookingsLoading}
+            />
+
+            {/* booking cards — skeletons while loading */}
             {bookingsLoading ? (
               <div className="space-y-2">
-                <Skeleton className="h-16" />
-                <Skeleton className="h-16" />
+                <Skeleton className="h-20" />
+                <Skeleton className="h-20" />
               </div>
             ) : bookings.length > 0 ? (
               <div className="space-y-2">
                 {bookings.map(b => {
-                  const color = b.member_color || '#6B7280';
+                  const bMember = members.find(m => m.id === b.member_id);
+                  const bookingStart = new Date(`${b.date}T${b.start_time}`);
+                  const minsUntil = (bookingStart - new Date()) / 60000;
+                  const canPreheat = b.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0;
                   return (
-                    <div key={b.id} onClick={()=>setSelectedSlot(b)}
-                      className="flex items-center gap-3 bg-gray-800 rounded-xl px-4 py-3 cursor-pointer hover:bg-gray-700 transition-colors">
-                      <div className="w-3 h-3 rounded-full flex-shrink-0" style={{background:color}} />
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold truncate">{b.member_name}</div>
-                        <div className="text-xs text-gray-400">{b.start_time}–{b.end_time} · {cToF(b.target_temp)}°F</div>
-                      </div>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-semibold capitalize
-                        ${b.status==='active'?'bg-green-800 text-green-300 pulse':
-                          b.status==='preheating'?'bg-orange-900 text-orange-300 pulse':
-                          b.status==='completed'?'bg-gray-700 text-gray-400':
-                          b.status==='cancelled'?'bg-red-950 text-red-400':
-                          'bg-gray-700 text-gray-400'}`}>
-                        {b.status}
-                      </span>
-                    </div>
+                    <BookingCard
+                      key={b.id}
+                      booking={b}
+                      member={bMember}
+                      onPress={() => setSelectedSlot(b)}
+                      onPreheat={() => handlePreheat(b.id)}
+                      canPreheat={canPreheat}
+                    />
                   );
                 })}
               </div>
-            ) : null}
+            ) : (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="text-5xl mb-3">🛖</div>
+                <p className="text-gray-400 font-semibold">No bookings yet</p>
+                <p className="text-gray-600 text-sm mt-1">Tap the strip above or + to add one</p>
+              </div>
+            )}
           </>
         )}
 
