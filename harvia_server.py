@@ -10,6 +10,7 @@ import logging
 import os
 import threading
 from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import bcrypt
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -49,6 +50,13 @@ HARVIA_DEVICE_ID = os.environ.get("HARVIA_DEVICE_ID", "")
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_CLAIMS_EMAIL = os.environ.get("VAPID_CLAIMS_EMAIL", "sweatbox@localhost")
+
+APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Australia/Sydney")
+
+def app_now() -> datetime:
+    """Current local time as a naive datetime in the configured APP_TIMEZONE."""
+    return datetime.now(ZoneInfo(APP_TIMEZONE)).replace(tzinfo=None)
+
 
 harvia: HarviaClient | None = None
 
@@ -217,36 +225,63 @@ def require_admin():
 # ---------------------------------------------------------------------------
 
 def check_and_auto_shutoff():
-    now = datetime.now()
+    now = app_now()
     today = now.date()
+    yesterday = today - timedelta(days=1)
     current_time = now.time()
 
     with SessionLocal() as db:
-        # Mark in-progress bookings as active (start has passed, end hasn't yet)
+        # ── Same-day bookings: start has passed, end hasn't yet → active ──────
         newly_active = (
             db.query(Booking)
             .filter(
                 Booking.date == today,
                 Booking.start_time <= current_time,
                 Booking.end_time > current_time,
+                Booking.end_time > Booking.start_time,   # normal (non-midnight-spanning)
                 Booking.status.in_(["scheduled", "preheating"]),
             )
             .all()
         )
+        # Midnight-spanning bookings from yesterday still running now
+        midnight_still_active = (
+            db.query(Booking)
+            .filter(
+                Booking.date == yesterday,
+                Booking.end_time < Booking.start_time,   # midnight-spanning marker
+                Booking.end_time > current_time,         # hasn't ended yet today
+                Booking.status.in_(["scheduled", "preheating"]),
+            )
+            .all()
+        )
+        newly_active.extend(midnight_still_active)
         for booking in newly_active:
             booking.status = "active"
             logger.info("Booking %d is now active", booking.id)
 
-        # Mark finished bookings as completed (end time has passed)
+        # ── Same-day bookings whose end has passed → completed ────────────────
         past_bookings = (
             db.query(Booking)
             .filter(
                 Booking.date == today,
                 Booking.end_time <= current_time,
+                Booking.end_time > Booking.start_time,   # normal bookings only
                 Booking.status.in_(["scheduled", "preheating", "active"]),
             )
             .all()
         )
+        # Midnight-spanning bookings from yesterday that have now ended
+        past_midnight = (
+            db.query(Booking)
+            .filter(
+                Booking.date == yesterday,
+                Booking.end_time < Booking.start_time,
+                Booking.end_time <= current_time,
+                Booking.status.in_(["scheduled", "preheating", "active"]),
+            )
+            .all()
+        )
+        past_bookings.extend(past_midnight)
         for booking in past_bookings:
             booking.status = "completed"
             logger.info("Auto-completed booking %d", booking.id)
@@ -255,8 +290,8 @@ def check_and_auto_shutoff():
             db.commit()
 
         if past_bookings:
-            # Turn off sauna only if no other booking is still active
-            still_active = (
+            # Turn off sauna only if no other booking is still running
+            still_today = (
                 db.query(Booking)
                 .filter(
                     Booking.date == today,
@@ -266,7 +301,17 @@ def check_and_auto_shutoff():
                 )
                 .first()
             )
-            if not still_active:
+            still_midnight = (
+                db.query(Booking)
+                .filter(
+                    Booking.date == yesterday,
+                    Booking.end_time < Booking.start_time,
+                    Booking.end_time > current_time,
+                    Booking.status == "active",
+                )
+                .first()
+            )
+            if not still_today and not still_midnight:
                 try:
                     get_harvia().turn_off()
                     logger.info("Auto-shutoff: sauna turned off after booking ended")
@@ -279,7 +324,7 @@ def check_preheat_reminders():
     if not VAPID_PRIVATE_KEY:
         return
 
-    now = datetime.now()
+    now = app_now()
     today = now.date()
 
     with SessionLocal() as db:
@@ -1014,8 +1059,9 @@ def create_booking():
     except ValueError as exc:
         return err(f"Invalid date/time: {exc}")
 
-    if end <= start:
-        return err("end_time must be after start_time")
+    # Allow end < start for midnight-spanning bookings (e.g. 23:00–01:00 next day)
+    if end == start:
+        return err("end_time must differ from start_time")
 
     target_temp_f = body.get("target_temp_f")
     target_temp = body.get("target_temp")
@@ -1024,9 +1070,16 @@ def create_booking():
     if target_temp is not None:
         target_temp = max(40, min(110, int(target_temp)))
 
-    on_time = body.get("on_time") or int(
-        (datetime.combine(booking_date, end) - datetime.combine(booking_date, start)).seconds / 60
-    )
+    # Duration: if end < start the session crosses midnight
+    if end > start:
+        duration_mins = int(
+            (datetime.combine(booking_date, end) - datetime.combine(booking_date, start)).seconds / 60
+        )
+    else:
+        duration_mins = int(
+            (datetime.combine(booking_date + timedelta(days=1), end) - datetime.combine(booking_date, start)).seconds / 60
+        )
+    on_time = body.get("on_time") or duration_mins
 
     db = SessionLocal()
     try:
@@ -1121,7 +1174,7 @@ def preheat_booking(booking_id: int):
         if booking.status != "scheduled":
             return err(f"Cannot preheat a booking with status '{booking.status}'")
 
-        now = datetime.now()
+        now = app_now()
         booking_start = datetime.combine(booking.date, booking.start_time)
         minutes_until = (booking_start - now).total_seconds() / 60
 
