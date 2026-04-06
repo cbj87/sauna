@@ -34,7 +34,8 @@
     .pwa-bottom-nav { display: none; }
     @media (display-mode: standalone) {
       .pwa-top-nav    { display: none !important; }
-      .pwa-bottom-nav { display: flex !important; }
+      .pwa-bottom-nav { display: block !important; }
+      .pwa-header     { padding-top: calc(1rem + env(safe-area-inset-top)) !important; }
       .pwa-main       { padding-bottom: calc(5rem + env(safe-area-inset-bottom)) !important; }
       .pwa-fab        { bottom: calc(4.75rem + env(safe-area-inset-bottom)) !important; }
     }
@@ -1427,7 +1428,7 @@ function MainApp({ currentMember, onLogout }) {
   return (
     <div className="min-h-screen bg-gray-900 text-white max-w-lg mx-auto">
       {/* header */}
-      <header className="sticky top-0 z-30 bg-gray-900/95 backdrop-blur border-b border-gray-800 px-5 py-4">
+      <header className="pwa-header sticky top-0 z-30 bg-gray-900/95 backdrop-blur border-b border-gray-800 px-5 py-4">
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-black tracking-tight">🛖 Sweat Box</h1>
           <div className="flex items-center gap-2">
