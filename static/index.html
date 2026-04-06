@@ -1341,6 +1341,32 @@ function MainApp({ currentMember, onLogout }) {
     return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
   }, []);
 
+  // PWA install prompt
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) && !window.navigator.standalone;
+  const [installPromptEvent, setInstallPromptEvent] = useState(null);
+  const [showInstallBanner, setShowInstallBanner] = useState(false);
+
+  useEffect(() => {
+    if (isStandalone || localStorage.getItem('installBannerDismissed')) return;
+    const handler = e => { e.preventDefault(); setInstallPromptEvent(e); setShowInstallBanner(true); };
+    window.addEventListener('beforeinstallprompt', handler);
+    if (isIOS) setTimeout(() => setShowInstallBanner(true), 1500);
+    return () => window.removeEventListener('beforeinstallprompt', handler);
+  }, []);
+
+  async function handleInstall() {
+    if (!installPromptEvent) return;
+    installPromptEvent.prompt();
+    const { outcome } = await installPromptEvent.userChoice;
+    if (outcome === 'accepted') { setShowInstallBanner(false); setInstallPromptEvent(null); }
+  }
+
+  function dismissInstallBanner() {
+    setShowInstallBanner(false);
+    localStorage.setItem('installBannerDismissed', '1');
+  }
+
   // Flush queued bookings whenever we come back online
   useEffect(() => {
     if (isOnline) flushBookingQueue();
@@ -1454,6 +1480,34 @@ function MainApp({ currentMember, onLogout }) {
       {!isOnline && (
         <div className="bg-amber-900/60 border-b border-amber-700 px-4 py-2 text-amber-300 text-xs font-semibold text-center">
           You're offline — showing cached data
+        </div>
+      )}
+
+      {/* install banner */}
+      {showInstallBanner && (
+        <div className="bg-gray-800 border-b border-gray-700 px-4 py-3">
+          {isIOS ? (
+            <div className="flex items-start gap-3">
+              <span className="text-2xl mt-0.5">🛖</span>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-white">Add Sweat Box to your Home Screen</p>
+                <p className="text-xs text-gray-400 mt-1">
+                  Tap <span className="text-blue-400 font-semibold">Share</span> <span className="text-blue-400">⬆</span> at the bottom of Safari, then tap <span className="text-blue-400 font-semibold">"Add to Home Screen"</span>
+                </p>
+              </div>
+              <button onClick={dismissInstallBanner} className="text-gray-500 hover:text-gray-300 text-lg leading-none p-1">✕</button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">🛖</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-white">Add Sweat Box to your Home Screen</p>
+                <p className="text-xs text-gray-400">Opens instantly, works offline</p>
+              </div>
+              <button onClick={handleInstall} className="bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white text-xs font-bold px-3 py-2 rounded-lg shrink-0">Add App</button>
+              <button onClick={dismissInstallBanner} className="text-gray-500 hover:text-gray-300 text-lg leading-none p-1">✕</button>
+            </div>
+          )}
         </div>
       )}
 
