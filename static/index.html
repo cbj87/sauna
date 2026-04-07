@@ -58,6 +58,36 @@ const fmtTime = hhmm => {
   const [h, m] = hhmm.split(':').map(Number);
   return `${h % 12 || 12}:${pad(m)} ${h >= 12 ? 'PM' : 'AM'}`;
 };
+
+// ─── time picker ─────────────────────────────────────────────────────────────
+// Replaces <input type="time"> to avoid iOS native oversizing and enforce
+// 12-hour display. Stores / emits value as HH:MM (24-hour) internally.
+function TimePicker({ value, onChange, hasError }) {
+  const [h, m] = value.split(':').map(Number);
+  const isPM    = h >= 12;
+  const hour12  = h % 12 || 12;
+  const snapMin = Math.round(m / 5) * 5 % 60;
+
+  const update = (newH12, newMin, newIsPM) => {
+    const h24 = (newH12 % 12) + (newIsPM ? 12 : 0);
+    onChange(`${pad(h24)}:${pad(newMin)}`);
+  };
+
+  const selCls = `flex-1 bg-gray-700 rounded-xl px-2 py-2.5 text-white text-base font-semibold text-center appearance-none cursor-pointer${hasError ? ' ring-2 ring-red-500' : ''}`;
+  return (
+    <div className="flex gap-2">
+      <select value={hour12} onChange={e => update(Number(e.target.value), snapMin, isPM)} className={selCls}>
+        {[12,1,2,3,4,5,6,7,8,9,10,11].map(n => <option key={n} value={n}>{n}</option>)}
+      </select>
+      <select value={snapMin} onChange={e => update(hour12, Number(e.target.value), isPM)} className={selCls}>
+        {Array.from({length:12},(_,i)=>i*5).map(n => <option key={n} value={n}>{pad(n)}</option>)}
+      </select>
+      <select value={isPM ? 'PM' : 'AM'} onChange={e => update(hour12, snapMin, e.target.value==='PM')} className={`w-20 bg-gray-700 rounded-xl px-2 py-2.5 text-white text-base font-semibold text-center appearance-none cursor-pointer${hasError ? ' ring-2 ring-red-500' : ''}`}>
+        <option>AM</option><option>PM</option>
+      </select>
+    </div>
+  );
+}
 // Local YYYY-MM-DD — unlike toISOString() this respects the device timezone
 const localDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 
@@ -400,8 +430,7 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
         {/* start time */}
         <div className="mb-4">
           <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Start time</label>
-          <input type="time" value={startTime} onChange={e=>setStartTime(e.target.value)}
-            className={`w-full bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold ${isPastTime ? 'ring-2 ring-red-500' : ''}`} />
+          <TimePicker value={startTime} onChange={setStartTime} hasError={isPastTime} />
           {isPastTime && <p className="text-red-400 text-xs mt-1.5">⚠ That time has already passed today</p>}
         </div>
 
