@@ -106,6 +106,42 @@ function Skeleton({ className = '' }) {
   return <div className={`bg-gray-700/60 rounded-xl animate-pulse ${className}`} />;
 }
 
+// ─── pull-to-refresh ─────────────────────────────────────────────────────────
+function usePullToRefresh(onRefresh, enabled) {
+  const [pullY, setPullY] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const startY = useRef(0);
+  const active = useRef(false);
+  const THRESHOLD = 64;
+
+  function onTouchStart(e) {
+    if (!enabled || window.scrollY > 0) return;
+    startY.current = e.touches[0].clientY;
+    active.current = true;
+  }
+  function onTouchMove(e) {
+    if (!active.current) return;
+    const dy = e.touches[0].clientY - startY.current;
+    if (dy > 0 && window.scrollY === 0) {
+      setPullY(Math.min(dy * 0.45, THRESHOLD + 20)); // resistance feel
+    } else {
+      active.current = false;
+      setPullY(0);
+    }
+  }
+  async function onTouchEnd() {
+    if (!active.current) return;
+    active.current = false;
+    if (pullY >= THRESHOLD) {
+      setRefreshing(true);
+      try { await onRefresh(); } finally { setRefreshing(false); }
+    }
+    setPullY(0);
+  }
+
+  return { pullY, refreshing, atThreshold: pullY >= THRESHOLD, handlers: { onTouchStart, onTouchMove, onTouchEnd } };
+}
+
 // ─── status pill ─────────────────────────────────────────────────────────────
 function StatusPill({ status }) {
   if (!status) return <span className="status-pill bg-gray-700 text-gray-400">Loading…</span>;
@@ -1551,6 +1587,11 @@ function MainApp({ currentMember, onLogout }) {
     } catch(e) { toast(e.message, 'error'); }
   }
 
+  const { pullY, refreshing: pullRefreshing, atThreshold, handlers: pullHandlers } = usePullToRefresh(
+    () => loadBookings(viewDate),
+    tab === 'today'
+  );
+
   function handleEmptyTimelineClick(t) {
     if (members.length === 0) {
       toast('Add a family member first', 'info');
@@ -1664,9 +1705,19 @@ function MainApp({ currentMember, onLogout }) {
       })()}
 
       {/* content */}
-      <main className="pwa-main px-4 py-5 pb-28 space-y-5">
+      <main className="pwa-main px-4 py-5 pb-28 space-y-5" {...pullHandlers}>
         {tab === 'today' && (
           <>
+            {/* pull-to-refresh indicator */}
+            {(pullY > 0 || pullRefreshing) && (
+              <div className="flex justify-center items-center overflow-hidden transition-all duration-150"
+                style={{height: pullRefreshing ? 36 : Math.min(pullY, 84)}}>
+                <span className={`text-sm font-semibold transition-colors ${atThreshold || pullRefreshing ? 'text-orange-400' : 'text-gray-500'}`}>
+                  {pullRefreshing ? '↻ Refreshing…' : atThreshold ? '↑ Release to refresh' : '↓ Pull to refresh'}
+                </span>
+              </div>
+            )}
+
             {/* 7-day selector */}
             <div className="flex gap-2 overflow-x-auto pb-1 mb-3 scrollbar-hide">
               {Array.from({length: 7}, (_, i) => {
