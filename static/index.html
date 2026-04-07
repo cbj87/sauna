@@ -1521,7 +1521,6 @@ function MainApp({ currentMember, onLogout }) {
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-black tracking-tight">🛖 Sweat Box</h1>
           <div className="flex items-center gap-2">
-            <StatusPill status={status} />
             {vapidKey && notifState !== 'unsupported' && notifState !== 'loading' && (
               <button
                 onClick={subscribePush}
