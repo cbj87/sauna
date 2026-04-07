@@ -579,12 +579,11 @@ function Controls({ status, bookings, members, presets = [], currentMember, onRe
     }
   }, [myProfile?.default_temp, myProfile?.default_time]);
 
-  // Poll status every 2 minutes while this tab is visible and unlocked
+  // Fetch status once when controls become unlocked. After that, only refresh
+  // on button press or manual tap — never poll automatically.
   useEffect(() => {
     if (!unlocked) return;
     onRefresh();
-    const interval = setInterval(onRefresh, 120000);
-    return () => clearInterval(interval);
   }, [unlocked]);
   const [loading, setLoading] = useState(false);
 
@@ -635,7 +634,10 @@ function Controls({ status, bookings, members, presets = [], currentMember, onRe
     <div className={`bg-gray-800 rounded-2xl p-5 transition-opacity ${!unlocked?'opacity-50 pointer-events-none':''}`}>
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-bold text-base">Sauna Controls</h2>
-        {!unlocked && <span className="text-xs bg-gray-700 text-gray-400 px-3 py-1 rounded-full">🔒 Book a session to unlock</span>}
+        {unlocked
+          ? <button onClick={onRefresh} className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors">↻ refresh</button>
+          : <span className="text-xs bg-gray-700 text-gray-400 px-3 py-1 rounded-full">🔒 Book a session to unlock</span>
+        }
       </div>
 
       {/* live readings */}
@@ -1297,9 +1299,9 @@ function MainApp({ currentMember, onLogout }) {
     loadMembers();
     loadPresets();
     loadPendingCount();
-    // Light global poll — keeps header status pill roughly current on all tabs.
-    // Controls tab runs its own 2-min poll when unlocked; this is just a fallback.
-    const interval = setInterval(() => { loadStatus(); loadPendingCount(); }, 300000); // 5 min
+    // Only poll pending count (DB-only, no Harvia API hit).
+    // Status is fetched on load, after button presses, and on manual refresh only.
+    const interval = setInterval(loadPendingCount, 300000); // 5 min
     return () => clearInterval(interval);
   }, []);
 
@@ -1330,14 +1332,10 @@ function MainApp({ currentMember, onLogout }) {
     });
   }, []);
 
-  // Refresh bookings + status whenever the app is foregrounded
-  // (covers notification taps, app-switching, screen wake, etc.)
+  // Refresh bookings (DB only) when app is foregrounded — no Harvia API call.
   useEffect(() => {
     function onVisible() {
-      if (!document.hidden) {
-        loadBookings();
-        loadStatus();
-      }
+      if (!document.hidden) loadBookings();
     }
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
