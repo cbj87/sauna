@@ -622,7 +622,7 @@ function MembersPanel({ members, onReload, currentMember }) {
 }
 
 // ─── controls ────────────────────────────────────────────────────────────────
-function Controls({ status, bookings, members, presets = [], currentMember, onRefresh, toast }) {
+function Controls({ status, statusUpdatedAt, bookings, members, presets = [], currentMember, onRefresh, toast }) {
   const now = new Date();
   const todayStr = localDate(now);
 
@@ -674,6 +674,18 @@ function Controls({ status, bookings, members, presets = [], currentMember, onRe
   }, [unlocked]);
   const [loading, setLoading] = useState(false);
 
+  // Ticking clock for "updated X min ago" — only re-renders every 30s, no API calls
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick(n => n + 1), 30000);
+    return () => clearInterval(t);
+  }, []);
+  const minsAgo = statusUpdatedAt ? Math.floor((Date.now() - statusUpdatedAt.getTime()) / 60000) : null;
+  const isStale = minsAgo !== null && minsAgo >= 5;
+  const updatedLabel = minsAgo === null ? 'Tap to load status'
+    : minsAgo === 0 ? 'Just updated'
+    : `Updated ${minsAgo} min ago`;
+
   const sauna_on = status?.active === 1;
 
   async function handleToggle() {
@@ -721,27 +733,35 @@ function Controls({ status, bookings, members, presets = [], currentMember, onRe
     <div className={`bg-gray-800 rounded-2xl p-5 transition-opacity ${!unlocked?'opacity-50 pointer-events-none':''}`}>
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-bold text-base">Sauna Controls</h2>
-        {unlocked
-          ? <button onClick={onRefresh} className="text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors">↻ refresh</button>
-          : <span className="text-xs bg-gray-700 text-gray-400 px-3 py-1 rounded-full">🔒 Book a session to unlock</span>
-        }
+        {!unlocked && <span className="text-xs bg-gray-700 text-gray-400 px-3 py-1 rounded-full">🔒 Book a session to unlock</span>}
       </div>
 
-      {/* live readings */}
-      <div className="grid grid-cols-3 gap-3 mb-5">
-        <div className="bg-gray-700/60 rounded-xl p-3 text-center">
-          <div className="text-xl font-bold text-orange-400">{currentTempF != null ? `${currentTempF}°F` : '—'}</div>
-          <div className="text-xs text-gray-400 mt-0.5">Current</div>
+      {/* live readings — tap anywhere on the grid to refresh */}
+      <button onClick={onRefresh} className="w-full text-left mb-1 group" disabled={loading}>
+        <div className="grid grid-cols-3 gap-3">
+          <div className="bg-gray-700/60 group-hover:bg-gray-700 rounded-xl p-3 text-center transition-colors">
+            <div className="text-xl font-bold text-orange-400">{currentTempF != null ? `${currentTempF}°F` : '—'}</div>
+            <div className="text-xs text-gray-400 mt-0.5">Current</div>
+          </div>
+          <div className="bg-gray-700/60 group-hover:bg-gray-700 rounded-xl p-3 text-center transition-colors">
+            <div className="text-xl font-bold text-red-400">{targetTempF != null ? `${targetTempF}°F` : '—'}</div>
+            <div className="text-xs text-gray-400 mt-0.5">Target</div>
+          </div>
+          <div className="bg-gray-700/60 group-hover:bg-gray-700 rounded-xl p-3 text-center transition-colors">
+            <div className="text-xl font-bold text-amber-300">{remaining != null ? `${remaining}m` : '—'}</div>
+            <div className="text-xs text-gray-400 mt-0.5">Remaining</div>
+          </div>
         </div>
-        <div className="bg-gray-700/60 rounded-xl p-3 text-center">
-          <div className="text-xl font-bold text-red-400">{targetTempF != null ? `${targetTempF}°F` : '—'}</div>
-          <div className="text-xs text-gray-400 mt-0.5">Target</div>
+        <div className={`text-xs mt-1.5 mb-4 text-center ${isStale ? 'text-amber-400' : 'text-gray-600'}`}>
+          {isStale ? '⚠ ' : ''}{updatedLabel} · tap to refresh
         </div>
-        <div className="bg-gray-700/60 rounded-xl p-3 text-center">
-          <div className="text-xl font-bold text-amber-300">{remaining != null ? `${remaining}m` : '—'}</div>
-          <div className="text-xs text-gray-400 mt-0.5">Remaining</div>
-        </div>
-      </div>
+      </button>
+
+      {/* full-width refresh button */}
+      <button onClick={onRefresh} disabled={loading}
+        className="w-full flex items-center justify-center gap-2 bg-gray-700 hover:bg-gray-600 active:bg-gray-500 text-gray-200 font-semibold py-3 rounded-xl mb-5 transition-colors disabled:opacity-50">
+        <span className={loading ? 'animate-spin' : ''}>↻</span> Refresh Status
+      </button>
 
       {/* presets */}
       {presets.length > 0 && (
@@ -1337,10 +1357,13 @@ function MainApp({ currentMember, onLogout }) {
   const [viewDate, setViewDate] = useState(today);
   const [bookingsLoading, setBookingsLoading] = useState(true);
 
+  const [statusUpdatedAt, setStatusUpdatedAt] = useState(null);
+
   async function loadStatus() {
     try {
       const s = await api('/api/sauna/status');
       setStatus(s);
+      setStatusUpdatedAt(new Date());
     } catch(e) {
       setStatus(prev => prev); // keep stale
     }
@@ -1590,8 +1613,8 @@ function MainApp({ currentMember, onLogout }) {
   }
 
   const { pullY, refreshing: pullRefreshing, atThreshold, handlers: pullHandlers } = usePullToRefresh(
-    () => loadBookings(viewDate),
-    tab === 'today'
+    () => tab === 'controls' ? loadStatus() : loadBookings(viewDate),
+    tab === 'today' || tab === 'controls'
   );
 
   function handleEmptyTimelineClick(t) {
@@ -1708,18 +1731,19 @@ function MainApp({ currentMember, onLogout }) {
 
       {/* content */}
       <main className="pwa-main px-4 py-5 pb-28 space-y-5" {...pullHandlers}>
+
+        {/* pull-to-refresh indicator — shown on Today + Controls tabs */}
+        {(pullY > 0 || pullRefreshing) && (
+          <div className="flex justify-center items-center overflow-hidden transition-all duration-150"
+            style={{height: pullRefreshing ? 36 : Math.min(pullY, 84)}}>
+            <span className={`text-sm font-semibold transition-colors ${atThreshold || pullRefreshing ? 'text-orange-400' : 'text-gray-500'}`}>
+              {pullRefreshing ? '↻ Refreshing…' : atThreshold ? '↑ Release to refresh' : '↓ Pull to refresh'}
+            </span>
+          </div>
+        )}
+
         {tab === 'today' && (
           <>
-            {/* pull-to-refresh indicator */}
-            {(pullY > 0 || pullRefreshing) && (
-              <div className="flex justify-center items-center overflow-hidden transition-all duration-150"
-                style={{height: pullRefreshing ? 36 : Math.min(pullY, 84)}}>
-                <span className={`text-sm font-semibold transition-colors ${atThreshold || pullRefreshing ? 'text-orange-400' : 'text-gray-500'}`}>
-                  {pullRefreshing ? '↻ Refreshing…' : atThreshold ? '↑ Release to refresh' : '↓ Pull to refresh'}
-                </span>
-              </div>
-            )}
-
             {/* 7-day selector */}
             <div className="flex gap-2 overflow-x-auto pb-1 mb-3 scrollbar-hide">
               {Array.from({length: 7}, (_, i) => {
@@ -1790,7 +1814,7 @@ function MainApp({ currentMember, onLogout }) {
         )}
 
         {tab === 'controls' && (
-          <Controls status={status} bookings={bookings} members={members} presets={presets} currentMember={currentMember} onRefresh={loadStatus} toast={toast} />
+          <Controls status={status} statusUpdatedAt={statusUpdatedAt} bookings={bookings} members={members} presets={presets} currentMember={currentMember} onRefresh={loadStatus} toast={toast} />
         )}
 
         {tab === 'members' && (
