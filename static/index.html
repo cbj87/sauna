@@ -1324,8 +1324,23 @@ function MainApp({ currentMember, onLogout }) {
     navigator.serviceWorker.addEventListener('message', e => {
       if (e.data?.type === 'OPEN_BOOKING') {
         setTab('today');
+        loadBookings();
+        loadStatus();
       }
     });
+  }, []);
+
+  // Refresh bookings + status whenever the app is foregrounded
+  // (covers notification taps, app-switching, screen wake, etc.)
+  useEffect(() => {
+    function onVisible() {
+      if (!document.hidden) {
+        loadBookings();
+        loadStatus();
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
   async function sendTestNotification() {
