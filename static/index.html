@@ -23,6 +23,8 @@
   <style>
     body { background: #111827; color: #f3f4f6; font-family: system-ui, sans-serif; }
     input[type=range] { accent-color: #f97316; }
+    /* Strip iOS-imposed intrinsic width so the input respects our layout */
+    input[type=time] { -webkit-appearance: none; appearance: none; width: 100%; box-sizing: border-box; }
     .status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; }
     .timeline-slot { position: absolute; border-radius: 6px; padding: 4px 8px; font-size: 0.75rem; font-weight: 600; overflow: hidden; cursor: pointer; }
     .fade-in { animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
