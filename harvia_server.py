@@ -8,6 +8,7 @@ import collections
 import json
 import logging
 import os
+import secrets
 import threading
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -73,6 +74,10 @@ LOGIN_LOCKOUT_SECONDS = 900    # lockout duration after max failures
 
 _login_attempts: dict[str, list[float]] = collections.defaultdict(list)
 _login_lock = threading.Lock()
+
+# Serialises the overlap-check + insert so two simultaneous requests can't
+# both pass the overlap check before either has committed.
+_booking_lock = threading.Lock()
 
 
 def _get_client_ip() -> str:
@@ -218,6 +223,35 @@ def require_admin():
         db.close()
         return None, None, (jsonify({"error": "Admin access required"}), 403)
     return db, member, None
+
+
+# ---------------------------------------------------------------------------
+# CSRF protection
+# ---------------------------------------------------------------------------
+
+def _generate_csrf_token() -> str:
+    """Return the session's CSRF token, creating one if it doesn't exist yet."""
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_hex(32)
+        session["csrf_token"] = token
+    return token
+
+
+# Endpoints that don't require a CSRF token (pre-authentication flows).
+_CSRF_EXEMPT = {"login", "signup", "static"}
+
+
+@app.before_request
+def csrf_protect():
+    """Reject state-changing requests that lack a valid CSRF token."""
+    if request.method not in ("POST", "DELETE", "PUT", "PATCH"):
+        return None
+    if request.endpoint in _CSRF_EXEMPT:
+        return None
+    token = request.headers.get("X-CSRF-Token", "")
+    if not token or token != session.get("csrf_token"):
+        return jsonify({"error": "CSRF token missing or invalid"}), 403
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +470,7 @@ def signup():
         if is_first:
             session.permanent = True
             session["member_id"] = member.id
-            return jsonify({"ok": True, "status": "approved", "member": member.to_dict()}), 201
+            return jsonify({"ok": True, "status": "approved", "member": member.to_dict(), "csrf_token": _generate_csrf_token()}), 201
 
         return jsonify({"ok": True, "status": "pending"}), 201
     finally:
@@ -482,7 +516,7 @@ def login():
         _clear_attempts(ip)
         session.permanent = True
         session["member_id"] = member.id
-        return jsonify({"ok": True, "member": member.to_dict()})
+        return jsonify({"ok": True, "member": member.to_dict(), "csrf_token": _generate_csrf_token()})
     finally:
         db.close()
 
@@ -504,7 +538,7 @@ def me():
         if not member:
             session.clear()
             return jsonify({"member": None})
-        return jsonify({"member": member.to_dict()})
+        return jsonify({"member": member.to_dict(), "csrf_token": _generate_csrf_token()})
     finally:
         db.close()
 
@@ -1097,41 +1131,42 @@ def create_booking():
 
     db = SessionLocal()
     try:
-        cooldown_start = (
-            datetime.combine(booking_date, start) - timedelta(minutes=COOLDOWN_MINUTES)
-        ).time()
-        cooldown_end = (
-            datetime.combine(booking_date, end) + timedelta(minutes=COOLDOWN_MINUTES)
-        ).time()
+        with _booking_lock:
+            cooldown_start = (
+                datetime.combine(booking_date, start) - timedelta(minutes=COOLDOWN_MINUTES)
+            ).time()
+            cooldown_end = (
+                datetime.combine(booking_date, end) + timedelta(minutes=COOLDOWN_MINUTES)
+            ).time()
 
-        overlap = (
-            db.query(Booking)
-            .filter(
-                Booking.date == booking_date,
-                Booking.status != "cancelled",
-                Booking.start_time < cooldown_end,
-                Booking.end_time > cooldown_start,
+            overlap = (
+                db.query(Booking)
+                .filter(
+                    Booking.date == booking_date,
+                    Booking.status != "cancelled",
+                    Booking.start_time < cooldown_end,
+                    Booking.end_time > cooldown_start,
+                )
+                .first()
             )
-            .first()
-        )
-        if overlap:
-            return err(
-                f"Overlaps with existing booking ({overlap.start_time.strftime('%H:%M')}–"
-                f"{overlap.end_time.strftime('%H:%M')}) including {COOLDOWN_MINUTES}-min cooldown"
-            )
+            if overlap:
+                return err(
+                    f"Overlaps with existing booking ({overlap.start_time.strftime('%H:%M')}–"
+                    f"{overlap.end_time.strftime('%H:%M')}) including {COOLDOWN_MINUTES}-min cooldown"
+                )
 
-        booking = Booking(
-            member_id=member.id,
-            date=booking_date,
-            start_time=start,
-            end_time=end,
-            target_temp=target_temp or member.default_temp,
-            on_time=on_time,
-            status="scheduled",
-        )
-        db.add(booking)
-        db.commit()
-        db.refresh(booking)
+            booking = Booking(
+                member_id=member.id,
+                date=booking_date,
+                start_time=start,
+                end_time=end,
+                target_temp=target_temp or member.default_temp,
+                on_time=on_time,
+                status="scheduled",
+            )
+            db.add(booking)
+            db.commit()
+            db.refresh(booking)
         return jsonify(booking.to_dict()), 201
     except IntegrityError:
         db.rollback()

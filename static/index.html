@@ -56,13 +56,17 @@ const timeStr = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 const localDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 
 let _onSessionExpired = null;
+let _csrfToken = null;
 
 async function api(path, opts = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 10000); // 10 s timeout
   try {
     const res = await fetch(path, {
-      headers: {'Content-Type':'application/json'},
+      headers: {
+        'Content-Type': 'application/json',
+        ...(_csrfToken ? {'X-CSRF-Token': _csrfToken} : {}),
+      },
       ...opts,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
       signal: controller.signal,
@@ -885,7 +889,8 @@ function LoginScreen({ onLogin, onShowSignup, sessionExpired }) {
     setLoading(true);
     setError('');
     try {
-      const { member } = await api('/api/auth/login', {method:'POST', body:{member_id: selected.id, pin}});
+      const { member, csrf_token } = await api('/api/auth/login', {method:'POST', body:{member_id: selected.id, pin}});
+      if (csrf_token) _csrfToken = csrf_token;
       onLogin(member);
     } catch(e) {
       setError(e.message);
@@ -952,6 +957,7 @@ function SignupScreen({ onSignup, onBack }) {
     setLoading(true);
     try {
       const result = await api('/api/auth/signup', {method:'POST', body:{name, color, pin}});
+      if (result.csrf_token) _csrfToken = result.csrf_token;
       onSignup(result);
     } catch(e) {
       setError(e.message);
@@ -1920,7 +1926,8 @@ function App() {
       setSessionExpired(true);
       setAuthState('login');
     };
-    api('/api/auth/me').then(({ member }) => {
+    api('/api/auth/me').then(({ member, csrf_token }) => {
+      if (csrf_token) _csrfToken = csrf_token;
       if (!member) { setAuthState('login'); return; }
       if (member.status === 'pending') { setAuthState('pending'); return; }
       setCurrentMember(member);
@@ -1947,6 +1954,7 @@ function App() {
 
   async function handleLogout() {
     try { await api('/api/auth/logout', {method:'POST'}); } catch {}
+    _csrfToken = null;
     setCurrentMember(null);
     setAuthState('login');
   }

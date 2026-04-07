@@ -14,8 +14,9 @@
 - [x] **Midnight-spanning bookings silently fail** — if end time is after midnight (e.g. 23:00–01:00 next day), the server rejects it with "end_time must be after start_time" and the user gets no helpful message; the UI should either block it or support next-day end times
 - [ ] **Booking end time allows impossible values** — the time picker doesn't validate `hour < 24`, so entering "25:00" wraps to 01:00 on the same date, creating a slot that ends before it starts and breaks the timeline renderer
 - [ ] **Past times are selectable in booking modal** — nothing prevents booking 06:00 AM on a day where it's already 7 PM; the backend rejects it but the error message gives no hint about the real cause
+- [ ] **Bell toggle has no loading/pending state** — during `subscribePush()` the button stays interactive; rapid taps can fire duplicate subscription requests; disable the button and show a subtle spinner while the request is in flight
 - [ ] **Auto-shutoff misses midnight boundary** — the scheduler checks `booking.end_time <= current_time` with the same date; if a booking ends at 23:59 the scheduler sees it as already-past on the next day's run but the sauna was never turned off overnight
-- [ ] **Concurrent booking race condition** — two family members submitting bookings for the same slot simultaneously can both pass the overlap check before either commits; add a DB-level unique constraint or serialised check
+- [x] **Concurrent booking race condition** — two family members submitting bookings for the same slot simultaneously can both pass the overlap check before either commits; add a DB-level unique constraint or serialised check
 
 ---
 
@@ -43,9 +44,9 @@
 - [ ] **Admin pending-count badge** — currently re-polls every 2 min even when not on the Admin tab; only poll when the badge is visible or tab is active
 - [ ] **Booking confirmation step** — show a summary (date, time, temp, duration) before saving, to prevent accidental mis-bookings
 - [ ] **Notification tap refreshes app state** — when a user taps a preheat notification and the app opens, it should immediately re-fetch booking and sauna status rather than showing stale data
-- [ ] **API request timeouts** — `api()` has no timeout; on slow mobile connections it hangs indefinitely with no feedback; add a 10s timeout and a "taking longer than expected…" indicator
+- [x] **API request timeouts** — `api()` has no timeout; on slow mobile connections it hangs indefinitely with no feedback; add a 10s timeout and a "taking longer than expected…" indicator
 - [ ] **Friendlier Harvia error messages** — when the Harvia device is offline, the toast shows a raw exception string; map common failure modes to human-readable messages ("Sauna device is unreachable — check its WiFi")
-- [ ] **Pull-to-refresh on Today tab** — standard mobile gesture; currently only a tiny ↻ button is available
+- [x] **Pull-to-refresh on Today tab** — standard mobile gesture; currently only a tiny ↻ button is available
 
 ---
 
@@ -60,11 +61,13 @@
 - [ ] **Dark/light mode** — currently hard-coded dark; could follow system preference
 - [ ] **Swipe between days** — swipe left/right on the timeline to move between the 7-day pill dates on mobile
 - [ ] **Animated status transitions** — smooth the status pill change (e.g. Off → Heating) with a brief colour crossfade
-- [ ] **iOS safe areas** — add `viewport-fit=cover` to the viewport meta tag and `env(safe-area-inset-*)` padding to the sticky header, tab nav, and FAB button so they don't overlap the Dynamic Island / home indicator on iPhone 14+
+- [x] **iOS safe areas** — add `viewport-fit=cover` to the viewport meta tag and `env(safe-area-inset-*)` padding to the sticky header, tab nav, and FAB button so they don't overlap the Dynamic Island / home indicator on iPhone 14+
 - [ ] **Touch target sizes** — duration buttons and the temperature slider are too small for reliable thumb taps on 375px screens; minimum 44px touch targets per Apple HIG
 - [ ] **Toast overflow on small screens** — long error messages (e.g. temperature limit exceeded) get cut off; add `word-wrap` and `max-width` so the full message is always readable
+- [ ] **Toasts not manually dismissible** — error toasts auto-disappear after 3.5 s even when the user is still reading; tap-to-dismiss would prevent messages vanishing before the user can act on them
+- [ ] **Install banner close button touch target too small** — the `✕` dismiss button uses minimal padding, well below the 44 px Apple HIG minimum; easy to mis-tap on small phones
 - [ ] **Splash screen for iOS PWA** — add `apple-touch-startup-image` meta tags so installed iOS PWA shows the app background instead of a white flash on launch
-- [ ] **Offline state indicator** — when the device loses network, show a banner ("You're offline — data may be stale") rather than silently failing API calls
+- [x] **Offline state indicator** — when the device loses network, show a banner ("You're offline — data may be stale") rather than silently failing API calls
 
 ---
 
@@ -84,7 +87,7 @@
 
 - [x] **Rate-limit login attempts** — 4-digit PINs have only 10,000 combinations; a simple per-IP attempt counter would stop brute force
 - [x] **Harden default secret key** — warn loudly (or refuse to start) if `APP_SECRET_KEY` is still the default `dev-secret-change-me`
-- [ ] **CSRF protection** — Flask sessions are in use but no CSRF token is checked on mutating POST/DELETE routes
+- [x] **CSRF protection** — Flask sessions are in use but no CSRF token is checked on mutating POST/DELETE routes
 - [ ] **Re-authenticate for destructive actions** — require PIN confirmation before deleting a member or removing admin privileges
 
 ---
@@ -98,3 +101,4 @@
 - [ ] **Error boundary** — wrap the React app in an error boundary so a JS crash shows a friendly message instead of a blank screen
 - [ ] **Logging / Sentry** — add structured error logging or a Sentry integration so production crashes are visible
 - [ ] **CDN fallback** — React and Tailwind are loaded from `unpkg.com`; if that CDN is unavailable the app is completely broken; vendor the files into `/static` or add a local fallback
+- [ ] **Push subscription silently breaks on VAPID key rotation** — if the server's VAPID keys are ever regenerated, existing push subscriptions become invalid with no re-subscribe prompt; detect the 410/404 from the push service and guide the user to re-enable notifications
