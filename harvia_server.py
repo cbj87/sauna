@@ -282,6 +282,19 @@ def check_and_auto_shutoff():
             .all()
         )
         past_bookings.extend(past_midnight)
+
+        # Yesterday's normal bookings still stuck as active/preheating after a
+        # server restart — they are unambiguously in the past, complete them all.
+        past_yesterday_stranded = (
+            db.query(Booking)
+            .filter(
+                Booking.date == yesterday,
+                Booking.end_time > Booking.start_time,   # normal (not midnight-spanning)
+                Booking.status.in_(["scheduled", "preheating", "active"]),
+            )
+            .all()
+        )
+        past_bookings.extend(past_yesterday_stranded)
         for booking in past_bookings:
             booking.status = "completed"
             logger.info("Auto-completed booking %d", booking.id)
