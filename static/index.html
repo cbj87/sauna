@@ -52,6 +52,8 @@ const fToC = f => Math.round((f - 32) * 5/9);
 const fmt = v => v != null ? v : '—';
 const pad = n => String(n).padStart(2,'0');
 const timeStr = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+// Local YYYY-MM-DD — unlike toISOString() this respects the device timezone
+const localDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
 
 let _onSessionExpired = null;
 
@@ -292,8 +294,8 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
   const [durationMins, setDurationMins] = useState(isEditing ? editingBooking.on_time : 60);
   const [tempF, setTempF] = useState(isEditing ? cToF(editingBooking.target_temp) : 194);
 
-  const bookingDate = isEditing ? editingBooking.date : (defaultDate || now.toISOString().slice(0,10));
-  const isToday = bookingDate === now.toISOString().slice(0,10);
+  const bookingDate = isEditing ? editingBooking.date : (defaultDate || localDate(now));
+  const isToday = bookingDate === localDate(now);
   const isPastTime = !isEditing && isToday && startTime < timeStr(now);
 
   const endTime = (() => {
@@ -622,7 +624,7 @@ function MembersPanel({ members, onReload, currentMember }) {
 // ─── controls ────────────────────────────────────────────────────────────────
 function Controls({ status, bookings, members, presets = [], currentMember, onRefresh, toast }) {
   const now = new Date();
-  const todayStr = now.toISOString().slice(0,10);
+  const todayStr = localDate(now);
 
   const isAdmin = currentMember?.is_admin;
 
@@ -1331,7 +1333,7 @@ function MainApp({ currentMember, onLogout }) {
   const [vapidKey, setVapidKey] = useState(null);
   const [notifState, setNotifState] = useState('loading'); // loading | unsupported | default | granted | denied | subscribed
 
-  const today = new Date().toISOString().slice(0,10);
+  const today = localDate(new Date());
   const [viewDate, setViewDate] = useState(today);
   const [bookingsLoading, setBookingsLoading] = useState(true);
 
@@ -1722,7 +1724,7 @@ function MainApp({ currentMember, onLogout }) {
             <div className="flex gap-2 overflow-x-auto pb-1 mb-3 scrollbar-hide">
               {Array.from({length: 7}, (_, i) => {
                 const d = new Date(); d.setDate(d.getDate() + i);
-                const iso = d.toISOString().slice(0,10);
+                const iso = localDate(d);
                 const isToday = i === 0;
                 const active = viewDate === iso;
                 return (
