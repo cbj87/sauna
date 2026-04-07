@@ -270,10 +270,12 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
   const memberMaxTempF = selectedMember?.max_temp ? cToF(selectedMember.max_temp) : 230;
   const effectiveTempF = Math.min(tempF, memberMaxTempF);
 
-  async function handleSave() {
+  const [confirming, setConfirming] = useState(false);
+
+  async function handleConfirm() {
     await onSave({
       member_id: Number(memberId),
-      date: defaultDate || now.toISOString().slice(0,10),
+      date: bookingDate,
       start_time: startTime,
       end_time: endTime,
       target_temp: fToC(effectiveTempF),
@@ -281,6 +283,43 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
     });
   }
 
+  // ── Confirmation screen ────────────────────────────────────────────────────
+  if (confirming) {
+    const fmtDate = new Date(bookingDate + 'T12:00:00').toLocaleDateString('en-US', {weekday:'long', month:'long', day:'numeric'});
+    const fmtStart = new Date(`${bookingDate}T${startTime}`).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+    const fmtEnd   = new Date(`${bookingDate}T${endTime}`).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit'});
+    const color = selectedMember?.color || '#f97316';
+    return (
+      <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center p-4" onClick={onClose}>
+        <div className="bg-gray-800 rounded-2xl w-full max-w-sm p-6 fade-in" onClick={e=>e.stopPropagation()}>
+          <h2 className="text-lg font-bold mb-1">Confirm Booking</h2>
+          <p className="text-xs text-gray-500 mb-5">Double-check before saving</p>
+          <div className="bg-gray-750 rounded-2xl overflow-hidden mb-5" style={{borderLeft: `4px solid ${color}`}}>
+            <div className="px-4 py-4 space-y-2">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full flex-shrink-0" style={{background: color}} />
+                <span className="font-bold" style={{color}}>{selectedMember?.name}</span>
+              </div>
+              <div className="text-white font-semibold">{fmtDate}</div>
+              <div className="text-gray-300 text-sm">
+                {fmtStart} – {fmtEnd}{endTime <= startTime ? <span className="text-orange-400 ml-1">(next day)</span> : null}
+                <span className="text-gray-500 ml-2">· {durationMins} min</span>
+              </div>
+              <div className="text-gray-300 text-sm">{effectiveTempF}°F ({fToC(effectiveTempF)}°C)</div>
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <button onClick={() => setConfirming(false)} className="flex-1 bg-gray-700 text-gray-300 py-3 rounded-xl font-semibold">← Back</button>
+            <button onClick={handleConfirm} style={{background: color}} className="flex-1 text-white py-3 rounded-xl font-bold">
+              {isEditing ? '✓ Save Changes' : '✓ Confirm'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Form screen ────────────────────────────────────────────────────────────
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center p-4" onClick={onClose}>
       <div className="bg-gray-800 rounded-2xl w-full max-w-sm p-6 fade-in" onClick={e=>e.stopPropagation()}>
@@ -352,10 +391,10 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
 
         <div className="flex gap-3">
           <button onClick={onClose} className="flex-1 bg-gray-700 text-gray-300 py-3 rounded-xl font-semibold">Cancel</button>
-          <button onClick={handleSave} disabled={isPastTime}
+          <button onClick={() => setConfirming(true)} disabled={isPastTime}
             style={{background: isPastTime ? undefined : (selectedMember?.color || '#f97316')}}
             className={`flex-1 text-white py-3 rounded-xl font-bold transition-opacity ${isPastTime ? 'bg-gray-600 opacity-50 cursor-not-allowed' : ''}`}>
-            {isEditing ? 'Save Changes' : 'Book It'}
+            {isEditing ? 'Review Changes' : 'Review →'}
           </button>
         </div>
       </div>
