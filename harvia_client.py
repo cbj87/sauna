@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 
 REGION = "eu-west-1"
 BASE_URL = "https://prod.myharvia-cloud.net"
-TOKEN_REFRESH_INTERVAL = 50 * 60  # refresh every 50 min (tokens expire at ~60 min)
+TOKEN_REFRESH_INTERVAL = 30 * 60  # refresh every 30 min — tokens expire at ~60 min,
+                                  # but pycognito check_token() only renews if already
+                                  # expired so we call renew_access_token() directly
+                                  # and keep a comfortable 30-min cadence
 
 # Maximum recent-call entries kept in memory for the stats endpoint
 _CALL_LOG_MAX = 100
@@ -77,19 +80,33 @@ class HarviaClient:
         logger.info("Harvia authenticated successfully (auth #%d)", self._auth_count)
 
     def _ensure_token(self):
-        """Refresh token if it's close to expiry."""
+        """Refresh token if it's due.  Called lazily before every API request."""
         with self._lock:
             if time.monotonic() - self._last_refresh > TOKEN_REFRESH_INTERVAL:
-                try:
-                    self._cognito.check_token(renew=True)
-                    self._id_token = self._cognito.id_token
-                    self._last_refresh = time.monotonic()
-                    with self._stats_lock:
-                        self._refresh_count += 1
-                    logger.info("Harvia token refreshed (refresh #%d)", self._refresh_count)
-                except Exception as exc:
-                    logger.warning("Token refresh failed (%s), re-authenticating", exc)
-                    self._authenticate()
+                self._do_refresh()
+
+    def _do_refresh(self):
+        """Force-refresh the Cognito token using the refresh token.
+        Must be called with self._lock held (or before the lock is needed)."""
+        try:
+            # renew_access_token() uses the long-lived refresh token to obtain
+            # a new ID token unconditionally — unlike check_token(renew=True)
+            # which only renews if the token is already expired.
+            self._cognito.renew_access_token()
+            self._id_token = self._cognito.id_token
+            self._last_refresh = time.monotonic()
+            with self._stats_lock:
+                self._refresh_count += 1
+            logger.info("Harvia token refreshed (refresh #%d)", self._refresh_count)
+        except Exception as exc:
+            logger.warning("Token refresh failed (%s), falling back to full re-auth", exc)
+            self._authenticate()
+
+    def proactive_refresh(self):
+        """Called by the background scheduler to keep the token warm.
+        Ensures a fresh token is always ready even during idle periods."""
+        with self._lock:
+            self._do_refresh()
 
     def _headers(self) -> dict:
         self._ensure_token()

@@ -428,9 +428,17 @@ def check_preheat_reminders():
             db.commit()
 
 
+def refresh_harvia_token():
+    """Proactively refresh the Harvia Cognito token every 30 min so it never
+    expires mid-request.  Runs independently of any user activity."""
+    if harvia:
+        harvia.proactive_refresh()
+
+
 scheduler = BackgroundScheduler(daemon=True)
-scheduler.add_job(check_and_auto_shutoff, "interval", seconds=60, id="auto_shutoff")
-scheduler.add_job(check_preheat_reminders, "interval", seconds=60, id="preheat_reminders")
+scheduler.add_job(check_and_auto_shutoff,  "interval", seconds=60,  id="auto_shutoff")
+scheduler.add_job(check_preheat_reminders, "interval", seconds=60,  id="preheat_reminders")
+scheduler.add_job(refresh_harvia_token,    "interval", minutes=30,  id="token_refresh")
 
 
 # ---------------------------------------------------------------------------
