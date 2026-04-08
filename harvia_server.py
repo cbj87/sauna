@@ -939,6 +939,16 @@ def health():
     return jsonify({"ok": True})
 
 
+@app.route("/api/admin/harvia-stats")
+def harvia_stats():
+    _, _, error = require_admin()
+    if error:
+        return error
+    if not harvia:
+        return jsonify({"error": "Harvia client not initialised"}), 503
+    return jsonify(harvia.get_stats())
+
+
 # ---------------------------------------------------------------------------
 # Control log (admin only)
 # ---------------------------------------------------------------------------

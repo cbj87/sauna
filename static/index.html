@@ -1041,6 +1041,8 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
   const [data, setData] = useState(null);
   const [log, setLog] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [apiStats, setApiStats] = useState(null);
+  const [statsOpen, setStatsOpen] = useState(false);
   // preset editing
   const [editPresetName, setEditPresetName] = useState(null);
   const [editPresetLabel, setEditPresetLabel] = useState('');
@@ -1060,6 +1062,9 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
   }
   async function loadLog() {
     try { setLog(await api('/api/admin/control_log')); } catch {}
+  }
+  async function loadApiStats() {
+    try { setApiStats(await api('/api/admin/harvia-stats')); } catch {}
   }
 
   function startEditPreset(p) {
@@ -1093,7 +1098,7 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
     finally { setBusy(false); }
   }
 
-  useEffect(() => { load(); loadLog(); }, []);
+  useEffect(() => { load(); loadLog(); loadApiStats(); }, []);
 
   async function approve(id) {
     setBusy(true);
@@ -1346,6 +1351,70 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
                 {entry.notes && <span className="text-gray-600 text-xs truncate">{entry.notes}</span>}
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* Harvia API Stats */}
+      <div className="bg-gray-800 rounded-2xl p-5">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-bold text-base">Harvia API Stats</h2>
+          <div className="flex gap-2">
+            <button onClick={() => { loadApiStats(); setStatsOpen(true); }} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
+            <button onClick={() => setStatsOpen(s => !s)} className="text-xs text-gray-500 hover:text-gray-300">{statsOpen ? 'hide' : 'show'}</button>
+          </div>
+        </div>
+        {!statsOpen ? (
+          <p className="text-gray-500 text-xs">Tap "show" to load API call counters and token health.</p>
+        ) : apiStats == null ? (
+          <p className="text-gray-500 text-sm pulse">Loading…</p>
+        ) : (
+          <div className="space-y-4">
+            {/* Summary counters */}
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: 'Total calls',     value: apiStats.total_calls },
+                { label: 'Total errors',    value: apiStats.total_errors,    warn: apiStats.total_errors > 0 },
+                { label: 'Calls (1 h)',     value: apiStats.calls_last_1h },
+                { label: 'Errors (1 h)',    value: apiStats.errors_last_1h,  warn: apiStats.errors_last_1h > 0 },
+                { label: 'Auth count',      value: apiStats.auth_count,      warn: apiStats.auth_count > 1 },
+                { label: 'Token refreshes', value: apiStats.refresh_count },
+              ].map(({ label, value, warn }) => (
+                <div key={label} className="bg-gray-700/50 rounded-xl px-3 py-2.5">
+                  <div className="text-xs text-gray-400 mb-0.5">{label}</div>
+                  <div className={`text-lg font-bold ${warn ? 'text-red-400' : 'text-white'}`}>{value}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Token health */}
+            <div className="bg-gray-700/50 rounded-xl px-4 py-3 space-y-1 text-sm">
+              <div className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-2">Token Health</div>
+              <div className="flex justify-between"><span className="text-gray-400">Token age</span><span className={`font-semibold ${apiStats.token_age_mins > 45 ? 'text-red-400' : 'text-white'}`}>{apiStats.token_age_mins} min</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Next refresh in</span><span className="font-semibold text-white">{apiStats.next_refresh_mins} min</span></div>
+              <div className="flex justify-between"><span className="text-gray-400">Uptime</span><span className="font-semibold text-white">{apiStats.uptime_mins} min</span></div>
+              {apiStats.last_error && (
+                <div className="mt-2 text-xs text-red-400 bg-red-900/30 rounded-lg px-3 py-2 break-all">
+                  <span className="font-bold">Last error: </span>{apiStats.last_error}
+                </div>
+              )}
+            </div>
+
+            {/* Recent call log */}
+            <div>
+              <div className="text-xs text-gray-400 font-semibold uppercase tracking-wide mb-2">Recent Calls (last 20)</div>
+              <div className="space-y-1">
+                {[...apiStats.recent_calls].reverse().map((c, i) => (
+                  <div key={i} className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-xs flex-wrap ${c.ok ? 'bg-gray-700/40' : 'bg-red-900/30'}`}>
+                    <span className="text-gray-500 flex-shrink-0">{new Date(c.time * 1000).toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', second:'2-digit'})}</span>
+                    <span className={`font-semibold flex-shrink-0 ${c.ok ? 'text-green-400' : 'text-red-400'}`}>{c.ok ? '✓' : '✗'}</span>
+                    <span className="text-gray-300 flex-shrink-0">{c.service}/{c.op}</span>
+                    <span className="text-gray-500 ml-auto flex-shrink-0">{c.ms}ms</span>
+                    {c.err && <span className="text-red-400 w-full mt-0.5 break-all">{c.err}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
       </div>
