@@ -386,21 +386,6 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
       <div className="bg-gray-800 rounded-2xl w-full max-w-sm p-6 fade-in" onClick={e=>e.stopPropagation()}>
         <h2 className="text-lg font-bold mb-4">{isEditing ? 'Edit Session' : 'Book a Session'}</h2>
 
-        {/* member picker — locked when editing */}
-        <div className="mb-4">
-          <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Who?</label>
-          <div className="flex flex-wrap gap-2">
-            {members.map(m => (
-              <button key={m.id} disabled={isEditing}
-                className={`px-4 py-2 rounded-xl font-semibold text-sm transition-all ${memberId===m.id?'ring-2 ring-white':'opacity-60'} ${isEditing?'cursor-default':''}`}
-                style={{background: m.color+'44', color: m.color, border: `2px solid ${m.color}`}}
-                onClick={() => { if(isEditing) return; setMemberId(m.id); const maxF = m.max_temp ? cToF(m.max_temp) : 230; setTempF(Math.min(cToF(m.default_temp), maxF)); setDurationMins(m.default_time); }}>
-                {m.name}
-              </button>
-            ))}
-          </div>
-        </div>
-
         {/* start time */}
         <div className="mb-4">
           <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Start time</label>
