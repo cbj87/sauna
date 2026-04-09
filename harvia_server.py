@@ -1359,6 +1359,98 @@ def preheat_booking(booking_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Admin DB browser
+# ---------------------------------------------------------------------------
+
+_DB_TABLES = {
+    "family_members": {
+        "model": FamilyMember,
+        "editable": ["name", "status", "is_admin", "default_temp", "default_time", "max_temp", "color"],
+    },
+    "bookings": {
+        "model": Booking,
+        "editable": ["date", "start_time", "end_time", "target_temp", "on_time", "status", "member_id"],
+    },
+    "presets": {
+        "model": Preset,
+        "editable": ["name", "label", "target_temp", "on_time", "sort_order"],
+    },
+    "control_log": {
+        "model": ControlLog,
+        "editable": [],  # read-only
+    },
+}
+
+
+@app.route("/api/admin/db/<table>")
+def db_list(table: str):
+    db, _, error = require_admin()
+    if error:
+        return error
+    if table not in _DB_TABLES:
+        db.close()
+        return err(f"Unknown table '{table}'")
+    try:
+        rows = db.query(_DB_TABLES[table]["model"]).order_by(
+            _DB_TABLES[table]["model"].id
+        ).all()
+        return jsonify([r.to_dict() for r in rows])
+    finally:
+        db.close()
+
+
+@app.route("/api/admin/db/<table>/<int:row_id>", methods=["PUT"])
+def db_update(table: str, row_id: int):
+    db, _, error = require_admin()
+    if error:
+        return error
+    if table not in _DB_TABLES:
+        db.close()
+        return err(f"Unknown table '{table}'")
+    editable = _DB_TABLES[table]["editable"]
+    if not editable:
+        db.close()
+        return err("This table is read-only")
+    try:
+        model = _DB_TABLES[table]["model"]
+        row = db.query(model).filter_by(id=row_id).first()
+        if not row:
+            return err("Row not found", 404)
+        body = request.get_json(silent=True) or {}
+        for field, value in body.items():
+            if field in editable:
+                setattr(row, field, value)
+        db.commit()
+        db.refresh(row)
+        return jsonify(row.to_dict())
+    finally:
+        db.close()
+
+
+@app.route("/api/admin/db/<table>/<int:row_id>", methods=["DELETE"])
+def db_delete(table: str, row_id: int):
+    db, admin_member, error = require_admin()
+    if error:
+        return error
+    if table not in _DB_TABLES:
+        db.close()
+        return err(f"Unknown table '{table}'")
+    try:
+        model = _DB_TABLES[table]["model"]
+        row = db.query(model).filter_by(id=row_id).first()
+        if not row:
+            return err("Row not found", 404)
+        # Safety: don't let admin delete themselves
+        if table == "family_members" and row.id == admin_member.id:
+            return err("Cannot delete your own account")
+        db.delete(row)
+        db.commit()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # SPA catch-all
 # ---------------------------------------------------------------------------
 

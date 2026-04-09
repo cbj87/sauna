@@ -1188,6 +1188,41 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
   const [editMaxTempId, setEditMaxTempId] = useState(null);
   const [editMaxTempHasLimit, setEditMaxTempHasLimit] = useState(false);
   const [editMaxTempF, setEditMaxTempF] = useState(212);
+  // db browser
+  const [dbOpen, setDbOpen] = useState(false);
+  const [dbTable, setDbTable] = useState('family_members');
+  const [dbRows, setDbRows] = useState(null);
+  const [dbLoading, setDbLoading] = useState(false);
+  const [dbEditId, setDbEditId] = useState(null);
+  const [dbEditDraft, setDbEditDraft] = useState({});
+
+  const DB_TABLES = ['family_members', 'bookings', 'presets', 'control_log'];
+  const DB_READONLY = ['control_log'];
+
+  async function loadDbTable(t) {
+    setDbLoading(true); setDbRows(null);
+    try { setDbRows(await api(`/api/admin/db/${t}`)); }
+    catch(e) { alert(e.message); }
+    finally { setDbLoading(false); }
+  }
+
+  function openDbTable(t) { setDbTable(t); setDbEditId(null); loadDbTable(t); }
+
+  async function saveDbRow(id) {
+    try {
+      const updated = await api(`/api/admin/db/${dbTable}/${id}`, { method: 'PUT', body: dbEditDraft });
+      setDbRows(prev => prev.map(r => r.id === id ? updated : r));
+      setDbEditId(null);
+    } catch(e) { alert(e.message); }
+  }
+
+  async function deleteDbRow(id) {
+    if (!confirm(`Delete row #${id} from ${dbTable}? This cannot be undone.`)) return;
+    try {
+      await api(`/api/admin/db/${dbTable}/${id}`, { method: 'DELETE' });
+      setDbRows(prev => prev.filter(r => r.id !== id));
+    } catch(e) { alert(e.message); }
+  }
 
   async function load() {
     try { setData(await api('/api/admin/members')); } catch {}
@@ -1549,6 +1584,87 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
             </div>
           </div>
         )}
+
+        {/* ── DB Browser ──────────────────────────────────────────────── */}
+        <div className="bg-gray-800 rounded-2xl overflow-hidden">
+          <button className="w-full flex items-center justify-between px-4 py-3 text-left"
+            onClick={() => { setDbOpen(o => !o); if (!dbOpen) loadDbTable(dbTable); }}>
+            <span className="font-bold text-sm">🗄 Database Browser</span>
+            <span className={`text-gray-400 text-xs transition-transform duration-200 inline-block ${dbOpen ? 'rotate-180' : ''}`}>▾</span>
+          </button>
+
+          {dbOpen && (
+            <div className="border-t border-gray-700 px-4 pb-4">
+              {/* table tabs */}
+              <div className="flex gap-1 mt-3 mb-3 overflow-x-auto scrollbar-hide">
+                {DB_TABLES.map(t => (
+                  <button key={t} onClick={() => openDbTable(t)}
+                    className={`flex-shrink-0 px-3 py-1 rounded-lg text-xs font-semibold transition-all ${dbTable === t ? 'bg-orange-500 text-white' : 'bg-gray-700 text-gray-400'}`}>
+                    {t.replace('_', ' ')}
+                  </button>
+                ))}
+              </div>
+
+              {/* rows */}
+              {dbLoading && <p className="text-gray-500 text-xs py-4 text-center">Loading…</p>}
+              {dbRows && dbRows.length === 0 && <p className="text-gray-500 text-xs py-4 text-center">No rows</p>}
+              {dbRows && dbRows.length > 0 && (
+                <div className="space-y-2">
+                  {dbRows.map(row => {
+                    const isEditing = dbEditId === row.id;
+                    const isReadOnly = DB_READONLY.includes(dbTable);
+                    return (
+                      <div key={row.id} className="bg-gray-700/60 rounded-xl p-3 text-xs">
+                        {isEditing ? (
+                          <>
+                            <div className="space-y-1.5 mb-2">
+                              {Object.entries(dbEditDraft).map(([k, v]) => (
+                                <div key={k} className="flex items-center gap-2">
+                                  <span className="text-gray-400 w-28 flex-shrink-0">{k}</span>
+                                  <input
+                                    className="flex-1 bg-gray-600 rounded-lg px-2 py-1 text-white text-xs min-w-0"
+                                    value={v === null ? '' : String(v)}
+                                    onChange={e => setDbEditDraft(d => ({...d, [k]: e.target.value}))}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                            <div className="flex gap-2">
+                              <button onClick={() => saveDbRow(row.id)}
+                                className="flex-1 bg-orange-500 text-white rounded-lg py-1.5 font-semibold">Save</button>
+                              <button onClick={() => setDbEditId(null)}
+                                className="flex-1 bg-gray-600 text-gray-300 rounded-lg py-1.5 font-semibold">Cancel</button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="space-y-0.5 mb-2">
+                              {Object.entries(row).map(([k, v]) => (
+                                <div key={k} className="flex gap-2">
+                                  <span className="text-gray-500 w-28 flex-shrink-0">{k}</span>
+                                  <span className="text-gray-200 break-all">{v === null ? <span className="text-gray-600">null</span> : String(v)}</span>
+                                </div>
+                              ))}
+                            </div>
+                            {!isReadOnly && (
+                              <div className="flex gap-2">
+                                <button onClick={() => { setDbEditId(row.id); setDbEditDraft(Object.fromEntries(Object.entries(row).filter(([k]) => !['id','created_at','member_name','member_color','target_temp_f'].includes(k)))); }}
+                                  className="flex-1 bg-gray-600 text-gray-200 rounded-lg py-1.5 font-semibold">Edit</button>
+                                <button onClick={() => deleteDbRow(row.id)}
+                                  className="px-4 bg-red-900/60 text-red-400 rounded-lg py-1.5 font-semibold">Delete</button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
       </div>
     </div>
   );
