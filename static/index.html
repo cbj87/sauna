@@ -453,21 +453,21 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
       <div className="bg-gray-800 rounded-2xl w-full max-w-sm p-6 fade-in" onClick={e=>e.stopPropagation()}>
         <h2 className="text-lg font-bold mb-4">{isEditing ? 'Edit Session' : 'Book a Session'}</h2>
 
-        {/* date + start time — side by side */}
-        <div className="flex gap-3 mb-4">
-          <div className="flex-1 min-w-0">
-            <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Date</label>
-            <input type="date" value={bookingDate} min={todayIso}
-              onChange={e => e.target.value && setBookingDate(e.target.value)}
-              className="w-full min-w-0 block bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Start time</label>
-            <input type="time" value={startTime} onChange={e=>setStartTime(e.target.value)}
-              className={`w-full min-w-0 block bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold ${isPastTime ? 'ring-2 ring-red-500' : ''}`} />
-          </div>
+        {/* date */}
+        <div className="mb-4">
+          <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Date</label>
+          <input type="date" value={bookingDate} min={todayIso}
+            onChange={e => e.target.value && setBookingDate(e.target.value)}
+            className="w-full block bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold" />
         </div>
-        {isPastTime && <p className="text-red-400 text-xs -mt-3 mb-4">⚠ That time has already passed today</p>}
+
+        {/* start time */}
+        <div className="mb-4">
+          <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Start time</label>
+          <input type="time" value={startTime} onChange={e=>setStartTime(e.target.value)}
+            className={`w-full block bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold ${isPastTime ? 'ring-2 ring-red-500' : ''}`} />
+          {isPastTime && <p className="text-red-400 text-xs mt-1.5">⚠ That time has already passed today</p>}
+        </div>
 
         {/* existing bookings for this date (exclude self when editing) */}
         {bookings && bookings.filter(b => b.date === bookingDate && (!isEditing || b.id !== editingBooking.id)).length > 0 && (
