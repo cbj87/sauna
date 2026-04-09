@@ -1917,8 +1917,9 @@ function MainApp({ currentMember, onLogout }) {
 
         {tab === 'today' && (
           <>
-            {/* refresh button */}
-            <div className="flex justify-end mb-1">
+            {/* section header */}
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-black tracking-tight">Schedule</h2>
               <button onClick={loadBookings} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
             </div>
 
