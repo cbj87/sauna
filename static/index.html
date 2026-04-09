@@ -307,6 +307,72 @@ function BookingCard({ booking: b, member, onPress, onPreheat, canPreheat }) {
   );
 }
 
+// ─── day row (stacked week view) ──────────────────────────────────────────────
+function DayRow({ date, bookings, members, expanded, onToggle, onSlotClick, onEmptyClick, onCardPress, onPreheat, loading }) {
+  const todayIso = localDate(new Date());
+  const isToday  = date === todayIso;
+  const d        = new Date(date + 'T12:00:00');
+  const dayLabel = isToday
+    ? 'Today'
+    : d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const count = bookings.length;
+
+  return (
+    <div className="rounded-2xl overflow-hidden mb-3" style={{background:'rgba(31,41,55,0.6)'}}>
+      {/* header row — tap to expand/collapse */}
+      <div className="flex items-center gap-3 px-4 pt-3 pb-1 cursor-pointer select-none" onClick={onToggle}>
+        <div className="flex-1 flex items-center gap-2 flex-wrap">
+          <span className={`font-bold text-sm ${isToday ? 'text-orange-400' : 'text-white'}`}>{dayLabel}</span>
+          {count > 0 && (
+            <span className="bg-gray-700 text-gray-400 text-[10px] font-semibold px-2 py-0.5 rounded-full leading-none">
+              {count} session{count !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+        <span className={`text-gray-500 text-xs transition-transform duration-200 inline-block ${expanded ? 'rotate-180' : ''}`}>▾</span>
+      </div>
+
+      {/* timeline strip — always visible */}
+      <div className="px-4 pb-2">
+        <DayStrip
+          bookings={bookings}
+          members={members}
+          onSlotClick={onSlotClick}
+          onEmptyClick={onEmptyClick}
+          loading={loading}
+        />
+      </div>
+
+      {/* booking cards — shown when expanded */}
+      {expanded && (
+        <div className="px-4 pb-3 space-y-2">
+          {loading ? (
+            <><Skeleton className="h-20" /><Skeleton className="h-20" /></>
+          ) : count > 0 ? (
+            bookings.map(b => {
+              const bMember   = members.find(m => m.id === b.member_id);
+              const minsUntil = (new Date(`${b.date}T${b.start_time}`) - new Date()) / 60000;
+              const canPreheat = b.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0;
+              return (
+                <BookingCard
+                  key={b.id}
+                  booking={b}
+                  member={bMember}
+                  onPress={() => onCardPress(b)}
+                  onPreheat={() => onPreheat(b.id)}
+                  canPreheat={canPreheat}
+                />
+              );
+            })
+          ) : (
+            <p className="text-center text-gray-600 text-sm py-4">No sessions — tap the timeline to add one</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── booking modal ────────────────────────────────────────────────────────────
 function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, onSave, editingBooking }) {
   const now = new Date();
@@ -1422,6 +1488,7 @@ function MainApp({ currentMember, onLogout }) {
   const [presets, setPresets] = useState([]);
   const [showBookModal, setShowBookModal] = useState(false);
   const [bookDefaultTime, setBookDefaultTime] = useState(null);
+  const [bookDefaultDate, setBookDefaultDate] = useState(null);
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [tab, setTab] = useState('today'); // today | controls | members | admin
   const [pendingCount, setPendingCount] = useState(0);
@@ -1433,8 +1500,8 @@ function MainApp({ currentMember, onLogout }) {
   const [notifState, setNotifState] = useState('loading'); // loading | unsupported | default | granted | denied | subscribed
 
   const today = localDate(new Date());
-  const [viewDate, setViewDate] = useState(today);
   const [bookingsLoading, setBookingsLoading] = useState(true);
+  const [expandedDays, setExpandedDays] = useState(() => new Set([today]));
 
   const [statusUpdatedAt, setStatusUpdatedAt] = useState(null);
 
@@ -1448,17 +1515,18 @@ function MainApp({ currentMember, onLogout }) {
     }
   }
 
-  async function loadBookings(date = viewDate) {
+  async function loadBookings() {
     setBookingsLoading(true);
     try {
-      const b = await api(`/api/bookings?date=${date}`);
+      const d7 = new Date(); d7.setDate(d7.getDate() + 6);
+      const b = await api(`/api/bookings?date_from=${today}&date_to=${localDate(d7)}`);
       setBookings(b);
     } catch {} finally {
       setBookingsLoading(false);
     }
   }
 
-  useEffect(() => { loadBookings(viewDate); }, [viewDate]);
+  useEffect(() => { loadBookings(); }, []);
 
   async function loadMembers() {
     try {
@@ -1692,16 +1760,17 @@ function MainApp({ currentMember, onLogout }) {
   }
 
   const { pullY, refreshing: pullRefreshing, atThreshold, handlers: pullHandlers } = usePullToRefresh(
-    () => tab === 'controls' ? loadStatus() : loadBookings(viewDate),
+    () => tab === 'controls' ? loadStatus() : loadBookings(),
     tab === 'today' || tab === 'controls'
   );
 
-  function handleEmptyTimelineClick(t) {
+  function handleEmptyTimelineClick(t, date) {
     if (members.length === 0) {
       toast('Add a family member first', 'info');
       setTab('members');
       return;
     }
+    setBookDefaultDate(date || today);
     setBookDefaultTime(t);
     setShowBookModal(true);
   }
@@ -1848,72 +1917,40 @@ function MainApp({ currentMember, onLogout }) {
 
         {tab === 'today' && (
           <>
-            {/* 7-day selector */}
-            <div className="flex gap-2 overflow-x-auto pb-1 mb-3 scrollbar-hide">
-              {Array.from({length: 7}, (_, i) => {
-                const d = new Date(); d.setDate(d.getDate() + i);
-                const iso = localDate(d);
-                const isToday = i === 0;
-                const active = viewDate === iso;
-                return (
-                  <button key={iso} onClick={() => setViewDate(iso)}
-                    className={`flex-shrink-0 flex flex-col items-center px-3 py-2 rounded-xl text-xs font-semibold transition-all ${active ? 'bg-orange-500 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-                    <span className="uppercase tracking-wide text-[10px]">{isToday ? 'Today' : d.toLocaleDateString('en-US',{weekday:'short'})}</span>
-                    <span className="text-base font-black leading-tight">{d.getDate()}</span>
-                  </button>
-                );
-              })}
+            {/* refresh button */}
+            <div className="flex justify-end mb-1">
+              <button onClick={loadBookings} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
             </div>
 
-            {/* date heading + refresh */}
-            <div className="flex justify-between items-center mb-3">
-              <h2 className="font-bold text-base">
-                {new Date(viewDate + 'T12:00:00').toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}
-              </h2>
-              <button onClick={() => loadBookings(viewDate)} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
-            </div>
-
-            {/* horizontal day strip */}
-            <DayStrip
-              bookings={bookings}
-              members={members}
-              onSlotClick={setSelectedSlot}
-              onEmptyClick={handleEmptyTimelineClick}
-              loading={bookingsLoading}
-            />
-
-            {/* booking cards — skeletons while loading */}
-            {bookingsLoading ? (
-              <div className="space-y-2">
-                <Skeleton className="h-20" />
-                <Skeleton className="h-20" />
-              </div>
-            ) : bookings.length > 0 ? (
-              <div className="space-y-2">
-                {bookings.map(b => {
-                  const bMember = members.find(m => m.id === b.member_id);
-                  const bookingStart = new Date(`${b.date}T${b.start_time}`);
-                  const minsUntil = (bookingStart - new Date()) / 60000;
-                  const canPreheat = b.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0;
-                  return (
-                    <BookingCard
-                      key={b.id}
-                      booking={b}
-                      member={bMember}
-                      onPress={() => setSelectedSlot(b)}
-                      onPreheat={() => handlePreheat(b.id)}
-                      canPreheat={canPreheat}
-                    />
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center py-16 text-center">
-                <div className="text-5xl mb-3">🛖</div>
-                <p className="text-gray-400 font-semibold">No bookings yet</p>
-                <p className="text-gray-600 text-sm mt-1">Tap the strip above or + to add one</p>
-              </div>
-            )}
+            {/* stacked 7-day week view */}
+            {Array.from({length: 7}, (_, i) => {
+              const d = new Date(); d.setDate(d.getDate() + i);
+              const iso = localDate(d);
+              const dayBookings = bookings.filter(b => b.date === iso);
+              const isExpanded  = expandedDays.has(iso);
+              function toggleDay() {
+                setExpandedDays(prev => {
+                  const next = new Set(prev);
+                  next.has(iso) ? next.delete(iso) : next.add(iso);
+                  return next;
+                });
+              }
+              return (
+                <DayRow
+                  key={iso}
+                  date={iso}
+                  bookings={dayBookings}
+                  members={members}
+                  expanded={isExpanded}
+                  onToggle={toggleDay}
+                  onSlotClick={setSelectedSlot}
+                  onEmptyClick={t => handleEmptyTimelineClick(t, iso)}
+                  onCardPress={setSelectedSlot}
+                  onPreheat={handlePreheat}
+                  loading={bookingsLoading}
+                />
+              );
+            })}
           </>
         )}
 
@@ -1935,6 +1972,7 @@ function MainApp({ currentMember, onLogout }) {
         <button
           onClick={() => {
             if (members.length === 0) { toast('Add a family member first','info'); setTab('members'); return; }
+            setBookDefaultDate(today);
             setBookDefaultTime(nowStr);
             setShowBookModal(true);
           }}
@@ -1947,9 +1985,9 @@ function MainApp({ currentMember, onLogout }) {
       {showBookModal && (
         <BookingModal
           defaultTime={bookDefaultTime}
-          defaultDate={viewDate}
+          defaultDate={bookDefaultDate || today}
           members={members}
-          bookings={bookings}
+          bookings={bookings.filter(b => b.date === (bookDefaultDate || today))}
           onClose={()=>setShowBookModal(false)}
           onSave={handleCreateBooking}
         />
@@ -1967,7 +2005,7 @@ function MainApp({ currentMember, onLogout }) {
         <BookingModal
           editingBooking={editingBooking}
           members={members}
-          bookings={bookings}
+          bookings={bookings.filter(b => b.date === editingBooking.date)}
           onClose={() => setEditingBooking(null)}
           onSave={data => handleEditBooking(editingBooking.id, data)}
         />

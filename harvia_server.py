@@ -1089,7 +1089,9 @@ def push_test():
 
 @app.route("/api/bookings")
 def list_bookings():
-    date_str = request.args.get("date")
+    date_str      = request.args.get("date")
+    date_from_str = request.args.get("date_from")
+    date_to_str   = request.args.get("date_to")
     db = SessionLocal()
     try:
         q = db.query(Booking).filter(Booking.status != "cancelled")
@@ -1099,6 +1101,17 @@ def list_bookings():
             except ValueError:
                 return err("Invalid date format, use YYYY-MM-DD")
             q = q.filter(Booking.date == d)
+        else:
+            if date_from_str:
+                try:
+                    q = q.filter(Booking.date >= date.fromisoformat(date_from_str))
+                except ValueError:
+                    return err("Invalid date_from format, use YYYY-MM-DD")
+            if date_to_str:
+                try:
+                    q = q.filter(Booking.date <= date.fromisoformat(date_to_str))
+                except ValueError:
+                    return err("Invalid date_to format, use YYYY-MM-DD")
         bookings = q.order_by(Booking.date, Booking.start_time).all()
         return jsonify([b.to_dict() for b in bookings])
     finally:
