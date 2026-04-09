@@ -453,12 +453,23 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
       <div className="bg-gray-800 rounded-2xl w-full max-w-sm p-6 fade-in" onClick={e=>e.stopPropagation()}>
         <h2 className="text-lg font-bold mb-4">{isEditing ? 'Edit Session' : 'Book a Session'}</h2>
 
-        {/* date */}
+        {/* date — day button strip */}
         <div className="mb-4">
           <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Date</label>
-          <input type="date" value={bookingDate} min={todayIso}
-            onChange={e => e.target.value && setBookingDate(e.target.value)}
-            className="w-full block bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold" />
+          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+            {Array.from({length: 7}, (_, i) => {
+              const d = new Date(); d.setDate(d.getDate() + i);
+              const iso = localDate(d);
+              const active = bookingDate === iso;
+              return (
+                <button key={iso} type="button" onClick={() => setBookingDate(iso)}
+                  className={`flex-shrink-0 flex flex-col items-center px-3 py-2 rounded-xl text-xs font-semibold transition-all ${active ? 'bg-orange-500 text-white' : 'bg-gray-700 text-gray-400'}`}>
+                  <span className="uppercase tracking-wide text-[10px]">{i === 0 ? 'Today' : d.toLocaleDateString('en-US',{weekday:'short'})}</span>
+                  <span className="text-base font-black leading-tight">{d.getDate()}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* start time */}
