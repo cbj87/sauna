@@ -382,9 +382,10 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
   const [startTime, setStartTime] = useState(isEditing ? editingBooking.start_time : (defaultTime || timeStr(now)));
   const [durationMins, setDurationMins] = useState(isEditing ? editingBooking.on_time : 60);
   const [tempF, setTempF] = useState(isEditing ? cToF(editingBooking.target_temp) : 194);
+  const [bookingDate, setBookingDate] = useState(isEditing ? editingBooking.date : (defaultDate || localDate(now)));
 
-  const bookingDate = isEditing ? editingBooking.date : (defaultDate || localDate(now));
-  const isToday = bookingDate === localDate(now);
+  const todayIso  = localDate(now);
+  const isToday   = bookingDate === todayIso;
   const isPastTime = !isEditing && isToday && startTime < timeStr(now);
 
   const endTime = (() => {
@@ -452,20 +453,28 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
       <div className="bg-gray-800 rounded-2xl w-full max-w-sm p-6 fade-in" onClick={e=>e.stopPropagation()}>
         <h2 className="text-lg font-bold mb-4">{isEditing ? 'Edit Session' : 'Book a Session'}</h2>
 
-        {/* start time */}
-        <div className="mb-4">
-          <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Start time</label>
-          <input type="time" value={startTime} onChange={e=>setStartTime(e.target.value)}
-            className={`w-full min-w-0 block bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold ${isPastTime ? 'ring-2 ring-red-500' : ''}`} />
-          {isPastTime && <p className="text-red-400 text-xs mt-1.5">⚠ That time has already passed today</p>}
+        {/* date + start time — side by side */}
+        <div className="flex gap-3 mb-4">
+          <div className="flex-1 min-w-0">
+            <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Date</label>
+            <input type="date" value={bookingDate} min={todayIso}
+              onChange={e => e.target.value && setBookingDate(e.target.value)}
+              className="w-full min-w-0 block bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Start time</label>
+            <input type="time" value={startTime} onChange={e=>setStartTime(e.target.value)}
+              className={`w-full min-w-0 block bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold ${isPastTime ? 'ring-2 ring-red-500' : ''}`} />
+          </div>
         </div>
+        {isPastTime && <p className="text-red-400 text-xs -mt-3 mb-4">⚠ That time has already passed today</p>}
 
         {/* existing bookings for this date (exclude self when editing) */}
-        {bookings && bookings.filter(b => !isEditing || b.id !== editingBooking.id).length > 0 && (
+        {bookings && bookings.filter(b => b.date === bookingDate && (!isEditing || b.id !== editingBooking.id)).length > 0 && (
           <div className="mb-4">
             <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Already booked</label>
             <div className="space-y-1">
-              {bookings.filter(b => !isEditing || b.id !== editingBooking.id).map(b => (
+              {bookings.filter(b => b.date === bookingDate && (!isEditing || b.id !== editingBooking.id)).map(b => (
                 <div key={b.id} className="flex items-center gap-2 px-3 py-1.5 bg-gray-700/50 rounded-lg">
                   <div className="w-2 h-2 rounded-full flex-shrink-0" style={{background: b.member_color || '#6B7280'}} />
                   <span className="text-sm text-gray-300 font-medium truncate">{b.member_name}</span>
@@ -1988,7 +1997,7 @@ function MainApp({ currentMember, onLogout }) {
           defaultTime={bookDefaultTime}
           defaultDate={bookDefaultDate || today}
           members={members}
-          bookings={bookings.filter(b => b.date === (bookDefaultDate || today))}
+          bookings={bookings}
           onClose={()=>setShowBookModal(false)}
           onSave={handleCreateBooking}
         />
@@ -2006,7 +2015,7 @@ function MainApp({ currentMember, onLogout }) {
         <BookingModal
           editingBooking={editingBooking}
           members={members}
-          bookings={bookings.filter(b => b.date === editingBooking.date)}
+          bookings={bookings}
           onClose={() => setEditingBooking(null)}
           onSave={data => handleEditBooking(editingBooking.id, data)}
         />
