@@ -458,7 +458,8 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
           <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Date</label>
           <input type="date" value={bookingDate} min={todayIso}
             onChange={e => e.target.value && setBookingDate(e.target.value)}
-            className="w-full block bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold" />
+            className="w-full block bg-gray-700 rounded-xl px-4 py-2.5 text-white text-base font-semibold"
+            style={{boxSizing:'border-box', maxWidth:'100%'}} />
         </div>
 
         {/* start time */}
