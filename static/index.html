@@ -375,36 +375,34 @@ function DayRow({ date, bookings, members, expanded, onToggle, onSlotClick, onEm
 
 // ─── help modal ───────────────────────────────────────────────────────────────
 function HelpModal({ onClose }) {
-  const sections = [
+  const faqs = [
     {
-      icon: '📅',
-      title: 'Booking a Session',
-      body: 'Tap the + button or tap anywhere on a day\'s timeline to open the booking form. Pick your date, start time, duration, and target temperature, then tap Review → Confirm to save it. Your session will appear on the schedule.',
+      q: 'How do I book a session?',
+      a: 'Tap the + button or tap anywhere on a day\'s timeline. Pick your date, start time, duration, and target temperature, then tap Review → Confirm. Your session will appear on the schedule.',
     },
     {
-      icon: '✏️',
-      title: 'Editing or Cancelling',
-      body: 'Tap any booking card on the schedule to open its details. From there you can edit the time, duration, or temperature, or cancel the session entirely.',
+      q: 'How do I change or cancel a booking?',
+      a: 'Tap any booking card on the schedule to open its details. From there you can edit the time, duration, or temperature, or cancel the session entirely.',
     },
     {
-      icon: '🔥',
-      title: 'Controls',
-      body: 'The Controls tab lets you manage the sauna in real time — set temperature, adjust duration, and turn it on or off. Controls are locked unless you have an active session or one starting within the next 90 minutes. You can also trigger preheat from a booking card when you\'re within that window.',
+      q: 'When do the controls unlock?',
+      a: 'The Controls tab unlocks when you have an active session or one starting within the next 90 minutes. Outside that window the controls are locked. You can also trigger preheat directly from a booking card once you\'re within the 90-minute window.',
     },
     {
-      icon: '⚡',
-      title: 'Presets',
-      body: 'Presets are quick-start shortcuts on the Controls tab. Each preset has a label, a target temperature, and a duration. Tap one to instantly apply those settings. Admins can add, edit, or delete presets from the Admin tab.',
+      q: 'What are presets?',
+      a: 'Presets are quick-start shortcuts on the Controls tab — each one has a name, a target temperature, and a duration. Tap one to instantly apply those settings without adjusting sliders manually.',
     },
     {
-      icon: '👥',
-      title: 'Members',
-      body: 'Each person in the household gets their own account with a unique colour, default temperature, and default session length. New members need admin approval before they can log in. Visit the Members tab to see your profile or request changes.',
+      q: 'How do I add or edit presets?',
+      a: 'Presets can be added, edited, or deleted from the Admin tab. Only admins can manage presets.',
     },
     {
-      icon: '⚙️',
-      title: 'Admin',
-      body: 'Admins can approve or reject new member sign-ups, set a maximum temperature limit per member, toggle admin privileges, and manage presets. The Admin tab is only visible to members with admin rights.',
+      q: 'How do I add a new member?',
+      a: 'New members sign up from the login screen. They\'ll show as pending until an admin approves them from the Admin tab. Each member gets their own colour, default temperature, and default session length.',
+    },
+    {
+      q: 'What can admins do?',
+      a: 'Admins can approve or reject new sign-ups, set a max temperature limit per member, toggle admin rights, manage presets, and access the database browser for direct data edits.',
     },
   ];
 
@@ -413,18 +411,15 @@ function HelpModal({ onClose }) {
       <div className="bg-gray-800 rounded-2xl w-full max-w-sm fade-in flex flex-col" style={{maxHeight:'85vh'}} onClick={e => e.stopPropagation()}>
         {/* header */}
         <div className="flex items-center justify-between px-6 pt-6 pb-4 border-b border-gray-700 flex-shrink-0">
-          <h2 className="text-lg font-bold">How to Use</h2>
+          <h2 className="text-lg font-bold">FAQ</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none p-1">✕</button>
         </div>
         {/* scrollable body */}
         <div className="overflow-y-auto px-6 py-4 space-y-5">
-          {sections.map(s => (
-            <div key={s.title}>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-base">{s.icon}</span>
-                <h3 className="font-bold text-sm text-white">{s.title}</h3>
-              </div>
-              <p className="text-sm text-gray-400 leading-relaxed">{s.body}</p>
+          {faqs.map((f, i) => (
+            <div key={i}>
+              <p className="font-bold text-sm text-white mb-1">{f.q}</p>
+              <p className="text-sm text-gray-400 leading-relaxed">{f.a}</p>
             </div>
           ))}
           <div className="pb-2" />
@@ -1982,6 +1977,10 @@ function MainApp({ currentMember, onLogout }) {
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-black tracking-tight">🛖 Sweat Box</h1>
           <div className="flex items-center gap-2">
+            <button onClick={() => setShowHelp(true)}
+              className="text-xs text-gray-500 hover:text-gray-300 font-semibold px-2 py-1 rounded-lg hover:bg-gray-800 transition-colors">
+              FAQ
+            </button>
             {vapidKey && notifState !== 'unsupported' && notifState !== 'loading' && (
               <button
                 onClick={subscribePush}
@@ -2007,14 +2006,6 @@ function MainApp({ currentMember, onLogout }) {
                 )}
               </button>
             )}
-            <button onClick={() => setShowHelp(true)} title="How to use"
-              className="p-2 rounded-xl text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors">
-              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10"/>
-                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
-                <line x1="12" y1="17" x2="12.01" y2="17"/>
-              </svg>
-            </button>
             <button onClick={onLogout} title={`Logout ${currentMember?.name}`}
               className="text-xs text-gray-500 hover:text-gray-300 font-semibold px-2 py-1 rounded-lg hover:bg-gray-800 transition-colors">
               {currentMember?.name} ↩
