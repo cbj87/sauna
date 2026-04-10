@@ -160,6 +160,62 @@ def _send_push(sub_info: dict, payload: dict):
         return False
 
 
+def _notify_admins_push(payload: dict, pref_key: str | None = None) -> None:
+    """Send a push notification to admin subscribers who have opted in.
+
+    pref_key: if provided, only admins whose notification_prefs has that key set to true
+    (or have no prefs set, meaning all defaults are on) will receive the notification.
+    """
+    if not VAPID_PRIVATE_KEY:
+        return
+    try:
+        with SessionLocal() as db:
+            admins = db.query(FamilyMember).filter_by(is_admin=1, status="approved").all()
+            dead = []
+            for admin in admins:
+                if pref_key is not None:
+                    prefs = admin.get_notification_prefs()
+                    if not prefs.get(pref_key, True):  # default True if not set
+                        continue
+                subs = db.query(PushSubscription).filter_by(member_id=admin.id).all()
+                for sub in subs:
+                    result = _send_push(
+                        {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
+                        payload,
+                    )
+                    if result == 410:
+                        dead.append(sub.endpoint)
+            for ep in dead:
+                db.query(PushSubscription).filter_by(endpoint=ep).delete()
+            if dead:
+                db.commit()
+    except Exception as exc:
+        logger.error("Failed to send admin push notifications: %s", exc)
+
+
+def _notify_member_push(member_id: int, payload: dict) -> None:
+    """Send a push notification to a specific member's subscribers. Never raises."""
+    if not VAPID_PRIVATE_KEY:
+        return
+    try:
+        with SessionLocal() as db:
+            subs = db.query(PushSubscription).filter_by(member_id=member_id).all()
+            dead = []
+            for sub in subs:
+                result = _send_push(
+                    {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
+                    payload,
+                )
+                if result == 410:
+                    dead.append(sub.endpoint)
+            for ep in dead:
+                db.query(PushSubscription).filter_by(endpoint=ep).delete()
+            if dead:
+                db.commit()
+    except Exception as exc:
+        logger.error("Failed to send member push notification: %s", exc)
+
+
 def get_harvia() -> HarviaClient:
     global harvia
     if harvia is None:
@@ -207,6 +263,20 @@ def require_auth():
     db = SessionLocal()
     member = current_member(db)
     if not member:
+        db.close()
+        return None, None, (jsonify({"error": "Not authenticated"}), 401)
+    return db, member, None
+
+
+def require_auth_or_pending():
+    """Like require_auth but also accepts pending members (used for push subscribe)."""
+    db = SessionLocal()
+    member_id = session.get("member_id")
+    if not member_id:
+        db.close()
+        return None, None, (jsonify({"error": "Not authenticated"}), 401)
+    member = db.query(FamilyMember).filter_by(id=member_id).first()
+    if not member or member.status == "rejected":
         db.close()
         return None, None, (jsonify({"error": "Not authenticated"}), 401)
     return db, member, None
@@ -396,6 +466,13 @@ def check_preheat_reminders():
             if now < notify_at or now >= start_dt:
                 continue
 
+            # Check preheat pref — default on if not set
+            member_prefs = booking.member.get_notification_prefs() if booking.member else {}
+            if not member_prefs.get("preheat", True):
+                booking.preheat_notified_at = now
+                db.commit()
+                continue
+
             subs = db.query(PushSubscription).filter_by(member_id=booking.member_id).all()
             # Mark notified even if no subscriptions so we don't re-check every minute
             booking.preheat_notified_at = now
@@ -480,7 +557,16 @@ def signup():
             session["member_id"] = member.id
             return jsonify({"ok": True, "status": "approved", "member": member.to_dict(), "csrf_token": _generate_csrf_token()}), 201
 
-        return jsonify({"ok": True, "status": "pending"}), 201
+        session.permanent = True
+        session["member_id"] = member.id
+        csrf = _generate_csrf_token()
+        _notify_admins_push({
+            "title": "👤 New signup",
+            "body": f"{name} wants to join — approve them in the Admin tab.",
+            "tag": f"signup-{member.id}",
+            "url": "/",
+        }, pref_key="signup")
+        return jsonify({"ok": True, "status": "pending", "csrf_token": csrf}), 201
     finally:
         db.close()
 
@@ -615,6 +701,13 @@ def admin_approve_member(member_id: int):
             raw = body["max_temp"]
             member.max_temp = int(raw) if raw is not None else None
         db.commit()
+        approved_id = member.id
+        _notify_member_push(approved_id, {
+            "title": "✅ You're approved!",
+            "body": "Your Sweat Box account has been approved. Log in to get started.",
+            "tag": "account-approved",
+            "url": "/",
+        })
         return jsonify({"ok": True, "member": member.to_dict()})
     finally:
         db.close()
@@ -982,6 +1075,31 @@ def admin_control_log():
 # Push notification routes
 # ---------------------------------------------------------------------------
 
+@app.route("/api/members/<int:member_id>/notification-prefs", methods=["PUT"])
+def update_notification_prefs(member_id: int):
+    """Update notification preferences for the authenticated member (or admin for any)."""
+    db, member, error = require_auth()
+    if error:
+        return error
+    body = request.get_json(silent=True) or {}
+    try:
+        if member.id != member_id and not member.is_admin:
+            return err("Cannot update another member's preferences", 403)
+        target = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not target:
+            return err("Member not found", 404)
+        # Merge new prefs over existing ones
+        prefs = target.get_notification_prefs()
+        for key in ("preheat", "signup", "booking", "approval"):
+            if key in body:
+                prefs[key] = bool(body[key])
+        target.notification_prefs = json.dumps(prefs)
+        db.commit()
+        return jsonify({"ok": True, "notification_prefs": prefs})
+    finally:
+        db.close()
+
+
 @app.route("/api/push/vapid-key")
 def push_vapid_key():
     return jsonify({"publicKey": VAPID_PUBLIC_KEY})
@@ -989,7 +1107,7 @@ def push_vapid_key():
 
 @app.route("/api/push/subscribe", methods=["POST"])
 def push_subscribe():
-    db, member, error = require_auth()
+    db, member, error = require_auth_or_pending()
     if error:
         return error
     try:
@@ -1198,6 +1316,18 @@ def create_booking():
             db.add(booking)
             db.commit()
             db.refresh(booking)
+        if not member.is_admin:
+            day = booking_date.day
+            month = booking_date.strftime("%b")
+            weekday = booking_date.strftime("%a")
+            start_fmt = start.strftime("%I:%M %p").lstrip("0")
+            end_fmt = end.strftime("%I:%M %p").lstrip("0")
+            _notify_admins_push({
+                "title": "📅 New booking",
+                "body": f"{member.name} booked {weekday} {day} {month}, {start_fmt}–{end_fmt}",
+                "tag": f"booking-new-{booking.id}",
+                "url": "/",
+            }, pref_key="booking")
         return jsonify(booking.to_dict()), 201
     except IntegrityError:
         db.rollback()
@@ -1308,6 +1438,18 @@ def edit_booking(booking_id: int):
         booking.preheat_notified_at = None
         db.commit()
         db.refresh(booking)
+        if not member.is_admin:
+            day = booking.date.day
+            month = booking.date.strftime("%b")
+            weekday = booking.date.strftime("%a")
+            start_fmt = start.strftime("%I:%M %p").lstrip("0")
+            end_fmt = end.strftime("%I:%M %p").lstrip("0")
+            _notify_admins_push({
+                "title": "✏️ Booking updated",
+                "body": f"{member.name}'s booking on {weekday} {day} {month} moved to {start_fmt}–{end_fmt}",
+                "tag": f"booking-edit-{booking.id}",
+                "url": "/",
+            }, pref_key="booking")
         return jsonify(booking.to_dict())
     except IntegrityError:
         db.rollback()

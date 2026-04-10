@@ -57,9 +57,18 @@ class FamilyMember(Base):
     default_time = Column(Integer, default=60)   # minutes
     max_temp = Column(Integer, nullable=True)     # °C — admin-set limit; None = no limit
     color = Column(String, default="#F97316")    # hex color for calendar display
+    # JSON text: {"preheat": true, "signup": true, "booking": true} — null = all defaults on
+    notification_prefs = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     bookings = relationship("Booking", back_populates="member", cascade="all, delete-orphan")
+
+    def get_notification_prefs(self) -> dict:
+        import json as _json
+        try:
+            return _json.loads(self.notification_prefs) if self.notification_prefs else {}
+        except Exception:
+            return {}
 
     def to_dict(self) -> dict:
         return {
@@ -71,6 +80,7 @@ class FamilyMember(Base):
             "default_time": self.default_time,
             "max_temp": self.max_temp,
             "color": self.color,
+            "notification_prefs": self.get_notification_prefs(),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
@@ -188,6 +198,7 @@ def _migrate_db():
     migrations = [
         "ALTER TABLE family_members ADD COLUMN max_temp INTEGER",
         "ALTER TABLE bookings ADD COLUMN preheat_notified_at DATETIME",
+        "ALTER TABLE family_members ADD COLUMN notification_prefs TEXT",
     ]
     with engine.connect() as conn:
         for stmt in migrations:
