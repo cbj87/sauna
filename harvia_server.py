@@ -629,7 +629,7 @@ def me():
     db = SessionLocal()
     try:
         member = db.query(FamilyMember).filter_by(id=member_id).first()
-        if not member:
+        if not member or member.status == "rejected":
             session.clear()
             return jsonify({"member": None})
         return jsonify({"member": member.to_dict(), "csrf_token": _generate_csrf_token()})
