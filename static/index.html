@@ -591,12 +591,13 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
 }
 
 // ─── slot detail modal ────────────────────────────────────────────────────────
-function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit }) {
+function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit, currentMember }) {
   const now = new Date();
   const bookingStart = new Date(`${booking.date}T${booking.start_time}`);
   const minsUntil = (bookingStart - now) / 60000;
-  const canPreheat = booking.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0;
-  const canEdit = booking.status === 'scheduled';
+  const isOwner = currentMember?.id === booking.member_id || currentMember?.is_admin;
+  const canPreheat = booking.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0 && isOwner;
+  const canEdit = booking.status === 'scheduled' && isOwner;
   const color = booking.member_color || '#f97316';
 
   return (
@@ -625,7 +626,7 @@ function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit }) {
               ✏️ Edit Booking
             </button>
           )}
-          {booking.status !== 'completed' && booking.status !== 'cancelled' && (
+          {booking.status !== 'completed' && booking.status !== 'cancelled' && isOwner && (
             <button onClick={()=>onCancel(booking.id)}
               className="w-full bg-red-900 hover:bg-red-800 text-red-300 py-3 rounded-xl font-semibold">
               Cancel Booking
@@ -2333,6 +2334,7 @@ function MainApp({ currentMember, onLogout }) {
           onCancel={handleCancelBooking}
           onPreheat={handlePreheat}
           onEdit={b => { setSelectedSlot(null); setEditingBooking(b); }}
+          currentMember={currentMember}
         />
       )}
       {editingBooking && (
