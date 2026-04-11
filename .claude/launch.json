@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sauna",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "export APP_SECRET_KEY=local-dev-secret-not-for-production FLASK_DEBUG=1 DB_PATH=/Users/cameron.jones/Projects/GitHub/sauna/sweatbox_local.db VAPID_CLAIMS_EMAIL=cbjones.87@gmail.com VAPID_PRIVATE_KEY=BoDLBqGs_pca3Xadn0ktyaFkKr7KQ8v4koikrFc4cfU VAPID_PUBLIC_KEY=BABo1sP5o4t_yrOp-swAjih9hOFCEL9tZWJ5KeZ1cz7KiniA8tjZcAw9vWlu3ZeFs2BUAn0qqxfweRgzLUbsCT4 && exec /Users/cameron.jones/Projects/GitHub/sauna/.venv/bin/python /Users/cameron.jones/Projects/GitHub/sauna/harvia_server.py"
+      ],
+      "port": 5000,
+      "autoPort": true
+    }
+  ]
+}

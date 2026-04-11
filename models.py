@@ -21,10 +21,10 @@ from sqlalchemy.orm import DeclarativeBase, relationship, sessionmaker
 def _c_to_f(c: int) -> int:
     return round(c * 9 / 5 + 32)
 
-DB_PATH = os.environ.get("DB_PATH", "/data/sweatbox.db")
-# Fall back to local dir if /data doesn't exist (local dev)
-if not os.path.exists("/data"):
-    DB_PATH = os.path.join(os.path.dirname(__file__), "sweatbox.db")
+DB_PATH = os.environ.get("DB_PATH")
+if not DB_PATH:
+    # Fall back to local dir if /data doesn't exist (local dev)
+    DB_PATH = "/data/sweatbox.db" if os.path.exists("/data") else os.path.join(os.path.dirname(__file__), "sweatbox.db")
 
 engine = create_engine(f"sqlite:///{DB_PATH}", connect_args={"check_same_thread": False})
 
