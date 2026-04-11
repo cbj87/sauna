@@ -4,9 +4,9 @@
 
 ## 🐛 Bug Fixes
 
-- [ ] **No confirmation before cancelling a booking** — tapping "Cancel" immediately fires the delete; a mis-tap kills a session with no undo; show a confirm dialog first
-- [ ] **No confirmation before turning the sauna OFF** — if someone else is mid-session and a second user taps Off, it cuts them off silently; require a confirm step ("Are you sure? [Name]'s session ends at HH:MM")
-- [ ] **Controls tab doesn't show whose booking is active** — the live status panel shows temp/time but not which member's session is running; add the member name + booking end time so users know before they act
+- [x] **No confirmation before cancelling a booking** — tapping "Cancel" immediately fires the delete; a mis-tap kills a session with no undo; show a confirm dialog first
+- [x] **No confirmation before turning the sauna OFF** — if someone else is mid-session and a second user taps Off, it cuts them off silently; require a confirm step ("Are you sure? [Name]'s session ends at HH:MM")
+- [x] **Controls tab doesn't show whose booking is active** — the live status panel shows temp/time but not which member's session is running; add the member name + booking end time so users know before they act
 - [ ] **Extend button has no upper limit** — +15 min can be tapped indefinitely, extending a session for hours past the original booking; cap at e.g. 2 hours beyond the original end time or require admin for additional extends
 - [ ] **Admin push notification shows °F label but uses °C value** — "Sauna is on — [Name] started session [Temp]°F" sends the raw Celsius value from the DB with an °F unit label; convert properly or use °C consistently in notifications
 - [ ] **Pending members see no content** — approved users can view the schedule read-only even before booking; pending members see only a waiting screen; let them at least view the schedule so they know what they're joining

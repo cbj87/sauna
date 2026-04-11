@@ -597,6 +597,7 @@ function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit, currentMembe
   const minsUntil = (bookingStart - now) / 60000;
   const isOwner = currentMember?.id === booking.member_id || currentMember?.is_admin;
   const canPreheat = booking.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0 && isOwner;
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const canEdit = booking.status === 'scheduled' && isOwner;
   const color = booking.member_color || '#f97316';
 
@@ -627,10 +628,22 @@ function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit, currentMembe
             </button>
           )}
           {booking.status !== 'completed' && booking.status !== 'cancelled' && isOwner && (
-            <button onClick={()=>onCancel(booking.id)}
-              className="w-full bg-red-900 hover:bg-red-800 text-red-300 py-3 rounded-xl font-semibold">
-              Cancel Booking
-            </button>
+            confirmCancel ? (
+              <div className="space-y-2">
+                <div className="text-sm text-center text-gray-300">Cancel this booking?</div>
+                <div className="flex gap-2">
+                  <button onClick={()=>setConfirmCancel(false)}
+                    className="flex-1 bg-gray-700 text-gray-300 py-3 rounded-xl font-semibold">Keep it</button>
+                  <button onClick={()=>onCancel(booking.id)}
+                    className="flex-1 bg-red-700 hover:bg-red-600 text-white py-3 rounded-xl font-semibold">Yes, cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button onClick={()=>setConfirmCancel(true)}
+                className="w-full bg-red-900 hover:bg-red-800 text-red-300 py-3 rounded-xl font-semibold">
+                Cancel Booking
+              </button>
+            )
           )}
           <button onClick={onClose} className="w-full bg-gray-700 text-gray-300 py-3 rounded-xl font-semibold">Close</button>
         </div>
@@ -839,16 +852,40 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
 
   const sauna_on = status?.active === 1;
 
+  // Find whose session is currently active (any member)
+  const activeSessionBooking = sauna_on ? bookings.find(b => {
+    if (b.date !== todayStr) return false;
+    if (b.status === 'cancelled' || b.status === 'completed') return false;
+    const start = new Date(`${b.date}T${b.start_time}`);
+    const end   = new Date(`${b.date}T${b.end_time}`);
+    return start <= now && end > now;
+  }) ?? bookings.find(b =>
+    b.date === todayStr && (b.status === 'active' || b.status === 'preheating')
+  ) : null;
+
+  const [confirmOff, setConfirmOff] = useState(false);
+
   async function handleToggle() {
+    if (sauna_on) {
+      setConfirmOff(true);
+      return;
+    }
     setLoading(true);
     try {
-      if (sauna_on) {
-        await api('/api/sauna/off', {method:'POST'});
-        toast('Sauna turned off', 'info');
-      } else {
-        await api('/api/sauna/on', {method:'POST', body:{targetTempF: Math.min(tempF, myMaxTempF), onTime: duration}});
-        toast('Sauna is heating up!', 'success');
-      }
+      await api('/api/sauna/on', {method:'POST', body:{targetTempF: Math.min(tempF, myMaxTempF), onTime: duration}});
+      toast('Sauna is heating up!', 'success');
+      setTimeout(onRefresh, 1500);
+    } catch(e) {
+      toast(e.message, 'error');
+    } finally { setLoading(false); }
+  }
+
+  async function handleTurnOff() {
+    setConfirmOff(false);
+    setLoading(true);
+    try {
+      await api('/api/sauna/off', {method:'POST'});
+      toast('Sauna turned off', 'info');
       setTimeout(onRefresh, 1500);
     } catch(e) {
       toast(e.message, 'error');
@@ -915,9 +952,16 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
             <div className="text-xs text-gray-400 mt-0.5">Remaining</div>
           </div>
         </div>
-        <div className={`text-xs mt-1.5 mb-4 text-center ${isStale ? 'text-amber-400' : 'text-gray-600'}`}>
+        <div className={`text-xs mt-1.5 text-center ${isStale ? 'text-amber-400' : 'text-gray-600'}`}>
           {isStale ? '⚠ ' : ''}{updatedLabel} · tap to refresh
         </div>
+        {sauna_on && activeSessionBooking && (
+          <div className="mt-2 mb-1 text-xs text-center text-gray-400">
+            <span style={{color: activeSessionBooking.member_color || '#f97316'}} className="font-semibold">{activeSessionBooking.member_name}</span>
+            {' '}· ends {fmtTime(activeSessionBooking.end_time)}
+          </div>
+        )}
+        <div className="mb-4" />
       </button>
 
       {/* full-width refresh button */}
@@ -971,24 +1015,45 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
       </div>
 
       {/* buttons */}
-      <div className="flex gap-3">
-        {sauna_on && (
-          <button onClick={handleSet} disabled={loading}
-            className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-3.5 rounded-xl font-semibold transition-all">
-            Update
+      {confirmOff ? (
+        <div className="space-y-2">
+          <div className="text-sm text-center text-gray-300">
+            Turn off the sauna?
+            {activeSessionBooking && (
+              <span className="block text-amber-400 mt-0.5">
+                <span style={{color: activeSessionBooking.member_color || '#f97316'}}>{activeSessionBooking.member_name}</span>'s session ends at {fmtTime(activeSessionBooking.end_time)}
+              </span>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={()=>setConfirmOff(false)} disabled={loading}
+              className="flex-1 bg-gray-700 hover:bg-gray-600 text-gray-300 py-3.5 rounded-xl font-semibold transition-all">Keep on</button>
+            <button onClick={handleTurnOff} disabled={loading}
+              className="flex-1 bg-red-700 hover:bg-red-600 text-white py-3.5 rounded-xl font-bold transition-all">
+              {loading ? <span className="pulse">…</span> : 'Yes, turn off'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex gap-3">
+          {sauna_on && (
+            <button onClick={handleSet} disabled={loading}
+              className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-3.5 rounded-xl font-semibold transition-all">
+              Update
+            </button>
+          )}
+          {canExtend && (
+            <button onClick={handleExtend} disabled={loading}
+              className="flex-1 bg-blue-900/60 hover:bg-blue-800/80 text-blue-300 py-3.5 rounded-xl font-semibold transition-all">
+              ⏱ +15 min
+            </button>
+          )}
+          <button onClick={handleToggle} disabled={loading}
+            className={`flex-1 py-3.5 rounded-xl font-bold text-base transition-all ${sauna_on?'bg-red-700 hover:bg-red-600 text-white':'bg-orange-500 hover:bg-orange-400 text-white'}`}>
+            {loading ? <span className="pulse">…</span> : sauna_on ? '⏹ Turn Off' : '🔥 Preheat'}
           </button>
-        )}
-        {canExtend && (
-          <button onClick={handleExtend} disabled={loading}
-            className="flex-1 bg-blue-900/60 hover:bg-blue-800/80 text-blue-300 py-3.5 rounded-xl font-semibold transition-all">
-            ⏱ +15 min
-          </button>
-        )}
-        <button onClick={handleToggle} disabled={loading}
-          className={`flex-1 py-3.5 rounded-xl font-bold text-base transition-all ${sauna_on?'bg-red-700 hover:bg-red-600 text-white':'bg-orange-500 hover:bg-orange-400 text-white'}`}>
-          {loading ? <span className="pulse">…</span> : sauna_on ? '⏹ Turn Off' : '🔥 Preheat'}
-        </button>
-      </div>
+        </div>
+      )}
     </div>
   );
 }
