@@ -109,6 +109,7 @@ class Booking(Base):
     # scheduled | preheating | active | completed | cancelled
     status = Column(String, default="scheduled")
     preheat_notified_at = Column(DateTime, nullable=True)
+    session_ending_notified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     member = relationship("FamilyMember", back_populates="bookings")
@@ -199,6 +200,7 @@ def _migrate_db():
         "ALTER TABLE family_members ADD COLUMN max_temp INTEGER",
         "ALTER TABLE bookings ADD COLUMN preheat_notified_at DATETIME",
         "ALTER TABLE family_members ADD COLUMN notification_prefs TEXT",
+        "ALTER TABLE bookings ADD COLUMN session_ending_notified_at DATETIME",
     ]
     with engine.connect() as conn:
         for stmt in migrations:

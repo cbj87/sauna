@@ -156,14 +156,23 @@ self.addEventListener('notificationclick', event => {
   event.notification.close();
 
   const notifData = event.notification.data || {};
+  const tag = event.notification.tag || '';
   const targetUrl = notifData.url || '/';
+
+  // Derive which tab to open from the notification tag / url
+  let openTab = null;
+  if (tag.startsWith('session-ending') || (notifData.url || '').includes('tab=controls')) {
+    openTab = 'controls';
+  }
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clientList => {
       for (const client of clientList) {
         if ('focus' in client) {
           client.focus();
-          if (notifData.bookingId) {
+          if (openTab) {
+            client.postMessage({ type: 'OPEN_TAB', tab: openTab });
+          } else if (notifData.bookingId) {
             client.postMessage({ type: 'OPEN_BOOKING', bookingId: notifData.bookingId });
           }
           return;

@@ -505,6 +505,70 @@ def check_preheat_reminders():
             db.commit()
 
 
+def check_session_ending():
+    """Send a push notification to the session owner 15 minutes before their booking ends."""
+    if not VAPID_PRIVATE_KEY:
+        return
+
+    now = app_now()
+    today = now.date()
+    notify_before = 15  # minutes
+
+    with SessionLocal() as db:
+        active = (
+            db.query(Booking)
+            .filter(
+                Booking.date == today,
+                Booking.status.in_(["active", "preheating", "scheduled"]),
+                Booking.session_ending_notified_at.is_(None),
+            )
+            .all()
+        )
+
+        for booking in active:
+            end_dt = datetime.combine(booking.date, booking.end_time)
+            notify_at = end_dt - timedelta(minutes=notify_before)
+
+            if now < notify_at or now >= end_dt:
+                continue
+
+            # Check member's session_ending pref
+            member_prefs = booking.member.get_notification_prefs() if booking.member else {}
+            if not member_prefs.get("session_ending", True):
+                booking.session_ending_notified_at = now
+                db.commit()
+                continue
+
+            subs = db.query(PushSubscription).filter_by(member_id=booking.member_id).all()
+            booking.session_ending_notified_at = now
+
+            dead_endpoints = []
+            for sub in subs:
+                end_fmt = booking.end_time.strftime("%I:%M %p").lstrip("0")
+                result = _send_push(
+                    {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
+                    {
+                        "title": "⏱️ 15 minutes left!",
+                        "body": f"Your session ends at {end_fmt}. Head to Controls to extend if needed.",
+                        "tag": f"session-ending-{booking.id}",
+                        "url": "/?tab=controls",
+                    },
+                )
+                if result is True:
+                    logger.info(
+                        "Session-ending reminder sent for booking %d (member_id=%d)",
+                        booking.id,
+                        booking.member_id,
+                    )
+                elif result == 410:
+                    dead_endpoints.append(sub.endpoint)
+
+            for ep in dead_endpoints:
+                db.query(PushSubscription).filter_by(endpoint=ep).delete()
+
+            db.commit()
+
+
 def refresh_harvia_token():
     """Proactively refresh the Harvia Cognito token every 30 min so it never
     expires mid-request.  Runs independently of any user activity."""
@@ -515,6 +579,7 @@ def refresh_harvia_token():
 scheduler = BackgroundScheduler(daemon=True)
 scheduler.add_job(check_and_auto_shutoff,  "interval", seconds=60,  id="auto_shutoff")
 scheduler.add_job(check_preheat_reminders, "interval", seconds=60,  id="preheat_reminders")
+scheduler.add_job(check_session_ending,    "interval", seconds=60,  id="session_ending")
 scheduler.add_job(refresh_harvia_token,    "interval", minutes=30,  id="token_refresh")
 
 
@@ -866,6 +931,12 @@ def sauna_on():
     try:
         get_harvia().turn_on(target_c, on_time)
         _log_sauna_action(mid, mname, "on", target_temp=target_c, on_time=on_time)
+        _notify_admins_push({
+            "title": "🔥 Sauna is on",
+            "body": f"{mname} started a session — {c_to_f(target_c)}°F ({target_c}°C) for {on_time} min.",
+            "tag": "sauna-on",
+            "url": "/",
+        }, pref_key="sauna_control")
         return jsonify({"ok": True, "targetTemp": target_c, "targetTempF": c_to_f(target_c), "onTime": on_time})
     except Exception as exc:
         logger.error("Turn on failed: %s", exc)
@@ -884,9 +955,72 @@ def sauna_off():
     try:
         get_harvia().turn_off()
         _log_sauna_action(mid, mname, "off")
+        _notify_admins_push({
+            "title": "❄️ Sauna turned off",
+            "body": f"Turned off by {mname}.",
+            "tag": "sauna-off",
+            "url": "/",
+        }, pref_key="sauna_control")
         return jsonify({"ok": True})
     except Exception as exc:
         logger.error("Turn off failed: %s", exc)
+        return err(str(exc), 502)
+
+
+@app.route("/api/sauna/extend", methods=["POST"])
+def sauna_extend():
+    """Add 15 minutes to the current session.
+
+    Reads remainingTime from Harvia telemetry and sends a new onTime of
+    remaining + 15.  Also pushes the booking end_time forward by 15 min.
+    Only the booking owner or an admin may extend.
+    """
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        now = app_now()
+        today = now.date()
+        # Find the active/preheating booking for today
+        active_booking = (
+            db.query(Booking)
+            .filter(
+                Booking.date == today,
+                Booking.status.in_(["active", "preheating", "scheduled"]),
+            )
+            .first()
+        )
+        if not active_booking:
+            return err("No active session to extend")
+        if active_booking.member_id != member.id and not member.is_admin:
+            return err("Cannot extend someone else's session", 403)
+
+        # Push booking end_time forward
+        new_end_dt = datetime.combine(active_booking.date, active_booking.end_time) + timedelta(minutes=15)
+        active_booking.end_time = new_end_dt.time()
+        active_booking.on_time = (active_booking.on_time or 60) + 15
+        # Allow session-ending reminder to fire again for the new end time
+        active_booking.session_ending_notified_at = None
+        db.commit()
+        mid, mname = member.id, member.name
+    finally:
+        db.close()
+
+    try:
+        # Get remaining time from the device; fall back to 15 if unavailable
+        status = get_harvia().get_full_status()
+        remaining = status.get("remainingTime")
+        if remaining is not None:
+            new_on_time = int(remaining) + 15
+        else:
+            # Fallback: use current onTime from device state + 15
+            current_on_time = status.get("onTime") or 15
+            new_on_time = int(current_on_time) + 15
+        get_harvia().set_state({"onTime": new_on_time})
+        _log_sauna_action(mid, mname, "set", on_time=new_on_time, notes=json.dumps({"extend": 15}))
+        return jsonify({"ok": True, "addedMinutes": 15, "newOnTime": new_on_time})
+    except Exception as exc:
+        logger.error("Extend session failed: %s", exc)
         return err(str(exc), 502)
 
 
@@ -1025,6 +1159,12 @@ def apply_preset(name: str):
     try:
         get_harvia().set_state(payload)
         _log_sauna_action(mid, mname, "preset", target_temp=p_temp, on_time=p_time, preset_name=p_name)
+        _notify_admins_push({
+            "title": "🔥 Sauna is on",
+            "body": f"{mname} started '{p_name}' — {c_to_f(p_temp)}°F ({p_temp}°C) for {p_time} min.",
+            "tag": "sauna-on",
+            "url": "/",
+        }, pref_key="sauna_control")
         return jsonify({"ok": True, "preset": p_name, "applied": payload})
     except Exception as exc:
         logger.error("Preset apply failed: %s", exc)
@@ -1487,14 +1627,22 @@ def preheat_booking(booking_id: int):
         if minutes_until < 0:
             return err("Booking has already passed")
 
+        b_temp = booking.target_temp or 90
+        b_time = booking.on_time or 60
         try:
-            get_harvia().turn_on(booking.target_temp or 90, booking.on_time or 60)
+            get_harvia().turn_on(b_temp, b_time)
         except Exception as exc:
             logger.error("Preheat API call failed: %s", exc)
             return err(f"Harvia API error: {exc}", 502)
 
         booking.status = "preheating"
         db.commit()
+        _notify_admins_push({
+            "title": "🔥 Sauna is preheating",
+            "body": f"{member.name} started preheat — {c_to_f(b_temp)}°F ({b_temp}°C) for {b_time} min.",
+            "tag": "sauna-on",
+            "url": "/",
+        }, pref_key="sauna_control")
         return jsonify({"ok": True, "status": "preheating"})
     finally:
         db.close()

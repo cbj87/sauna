@@ -876,6 +876,18 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
     finally { setLoading(false); }
   }
 
+  async function handleExtend() {
+    setLoading(true);
+    try {
+      await api('/api/sauna/extend', {method:'POST'});
+      toast('+15 min added!', 'success');
+      setTimeout(onRefresh, 1000);
+    } catch(e) { toast(e.message, 'error'); }
+    finally { setLoading(false); }
+  }
+
+  const canExtend = sauna_on && (isAdmin || relevantBookings.length > 0);
+
   const currentTempF = status?.temperatureF ?? cToF(status?.temperature);
   const targetTempF  = status?.targetTempF  ?? cToF(status?.targetTemp);
   const remaining = status?.remainingTime;
@@ -964,6 +976,12 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
           <button onClick={handleSet} disabled={loading}
             className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-3.5 rounded-xl font-semibold transition-all">
             Update
+          </button>
+        )}
+        {canExtend && (
+          <button onClick={handleExtend} disabled={loading}
+            className="flex-1 bg-blue-900/60 hover:bg-blue-800/80 text-blue-300 py-3.5 rounded-xl font-semibold transition-all">
+            ⏱ +15 min
           </button>
         )}
         <button onClick={handleToggle} disabled={loading}
@@ -1767,8 +1785,24 @@ function NotificationsPanel({ onClose, notifState, vapidKey, onSubscribeToggle, 
                   <Toggle checked={notifPrefs.preheat !== false} onChange={v => onPrefChange('preheat', v)} />
                 </div>
 
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-medium">Session ending soon</p>
+                    <p className="text-xs text-gray-400 mt-0.5">15 min before your session ends</p>
+                  </div>
+                  <Toggle checked={notifPrefs.session_ending !== false} onChange={v => onPrefChange('session_ending', v)} />
+                </div>
+
                 {currentMember?.is_admin && (
                   <>
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-medium">Sauna on / off</p>
+                        <p className="text-xs text-gray-400 mt-0.5">When the sauna is turned on or off</p>
+                      </div>
+                      <Toggle checked={notifPrefs.sauna_control !== false} onChange={v => onPrefChange('sauna_control', v)} />
+                    </div>
+
                     <div className="flex items-center justify-between gap-4">
                       <div>
                         <p className="text-sm font-medium">New sign-ups</p>
@@ -1904,12 +1938,15 @@ function MainApp({ currentMember, onLogout }) {
         setNotifState(Notification.permission === 'denied' ? 'denied' : 'default');
       }
     });
-    // Listen for messages from SW (e.g. notification tap → open booking)
+    // Listen for messages from SW (e.g. notification tap → open booking or tab)
     navigator.serviceWorker.addEventListener('message', e => {
       if (e.data?.type === 'OPEN_BOOKING') {
         setTab('today');
         loadBookings();
         loadStatus();
+      } else if (e.data?.type === 'OPEN_TAB') {
+        setTab(e.data.tab);
+        if (e.data.tab === 'controls') loadStatus();
       }
     });
   }, []);
