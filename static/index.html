@@ -1374,6 +1374,8 @@ function PendingScreen({ onLogout }) {
 function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
   const [data, setData] = useState(null);
   const [log, setLog] = useState(null);
+  const [logTotal, setLogTotal] = useState(0);
+  const [logLoadingMore, setLogLoadingMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [apiStats, setApiStats] = useState(null);
   const [statsOpen, setStatsOpen] = useState(false);
@@ -1430,7 +1432,21 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
     try { setData(await api('/api/admin/members')); } catch {}
   }
   async function loadLog() {
-    try { setLog(await api('/api/admin/control_log')); } catch {}
+    try {
+      const res = await api('/api/admin/control_log');
+      setLog(res.entries);
+      setLogTotal(res.total);
+    } catch {}
+  }
+  async function loadMoreLog() {
+    if (!log) return;
+    setLogLoadingMore(true);
+    try {
+      const res = await api(`/api/admin/control_log?offset=${log.length}`);
+      setLog(prev => [...prev, ...res.entries]);
+      setLogTotal(res.total);
+    } catch {}
+    finally { setLogLoadingMore(false); }
   }
   async function loadApiStats() {
     try { setApiStats(await api('/api/admin/harvia-stats')); } catch {}
@@ -1700,27 +1716,38 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
       <div className="bg-gray-800 rounded-2xl p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="font-bold text-base">Control Log</h2>
-          <button onClick={loadLog} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
+          <div className="flex items-center gap-3">
+            {log != null && <span className="text-xs text-gray-500">{log.length} of {logTotal}</span>}
+            <button onClick={loadLog} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
+          </div>
         </div>
         {log == null ? (
           <p className="text-gray-500 text-sm pulse">Loading…</p>
         ) : log.length === 0 ? (
           <p className="text-gray-500 text-sm">No control actions yet.</p>
         ) : (
-          <div className="space-y-1.5">
-            {log.map(entry => (
-              <div key={entry.id} className="flex items-center gap-2 bg-gray-700/50 rounded-lg px-3 py-2 text-sm flex-wrap">
-                <span className="text-gray-500 text-xs w-32 flex-shrink-0">{fmtLogTime(entry.created_at)}</span>
-                <span className="font-semibold text-white w-20 truncate flex-shrink-0">{entry.member_name || '—'}</span>
-                <span className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${actionColors[entry.action] || 'bg-gray-700 text-gray-300'}`}>
-                  {entry.preset_name || entry.action}
-                </span>
-                {entry.target_temp_f != null && <span className="text-orange-400 font-semibold">{entry.target_temp_f}°F</span>}
-                {entry.on_time != null && <span className="text-gray-400">{entry.on_time} min</span>}
-                {entry.notes && <span className="text-gray-600 text-xs truncate">{entry.notes}</span>}
-              </div>
-            ))}
-          </div>
+          <>
+            <div className="space-y-1.5">
+              {log.map(entry => (
+                <div key={entry.id} className="flex items-center gap-2 bg-gray-700/50 rounded-lg px-3 py-2 text-sm flex-wrap">
+                  <span className="text-gray-500 text-xs w-32 flex-shrink-0">{fmtLogTime(entry.created_at)}</span>
+                  <span className="font-semibold text-white w-20 truncate flex-shrink-0">{entry.member_name || '—'}</span>
+                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${actionColors[entry.action] || 'bg-gray-700 text-gray-300'}`}>
+                    {entry.preset_name || entry.action}
+                  </span>
+                  {entry.target_temp_f != null && <span className="text-orange-400 font-semibold">{entry.target_temp_f}°F</span>}
+                  {entry.on_time != null && <span className="text-gray-400">{entry.on_time} min</span>}
+                  {entry.notes && <span className="text-gray-600 text-xs truncate">{entry.notes}</span>}
+                </div>
+              ))}
+            </div>
+            {log.length < logTotal && (
+              <button onClick={loadMoreLog} disabled={logLoadingMore}
+                className="w-full mt-3 py-2 text-xs text-gray-400 hover:text-gray-200 bg-gray-700/50 hover:bg-gray-700 rounded-lg transition-colors disabled:opacity-50">
+                {logLoadingMore ? 'Loading…' : `Load more (${logTotal - log.length} remaining)`}
+              </button>
+            )}
+          </>
         )}
       </div>
 
@@ -2281,8 +2308,8 @@ function MainApp({ currentMember, onLogout }) {
   }
 
   const { pullY, refreshing: pullRefreshing, atThreshold, handlers: pullHandlers } = usePullToRefresh(
-    () => tab === 'controls' ? loadStatus() : loadBookings(),
-    tab === 'today' || tab === 'controls'
+    () => Promise.all([loadBookings(), loadStatus()]),
+    true   // enabled on all tabs
   );
 
   function handleEmptyTimelineClick(t, date) {
@@ -2427,7 +2454,7 @@ function MainApp({ currentMember, onLogout }) {
       {/* content */}
       <main className="pwa-main px-4 py-5 pb-28 space-y-5" {...pullHandlers}>
 
-        {/* pull-to-refresh indicator — shown on Today + Controls tabs */}
+        {/* pull-to-refresh indicator — shown on all tabs */}
         {(pullY > 0 || pullRefreshing) && (
           <div className="flex justify-center items-center overflow-hidden transition-all duration-150"
             style={{height: pullRefreshing ? 36 : Math.min(pullY, 84)}}>

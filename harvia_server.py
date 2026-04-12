@@ -1287,13 +1287,22 @@ def admin_control_log():
     if error:
         return error
     try:
-        logs = (
+        limit  = min(int(request.args.get("limit",  50)), 200)
+        offset = max(int(request.args.get("offset",  0)),   0)
+        total  = db.query(ControlLog).count()
+        logs   = (
             db.query(ControlLog)
             .order_by(ControlLog.created_at.desc())
-            .limit(200)
+            .limit(limit)
+            .offset(offset)
             .all()
         )
-        return jsonify([l.to_dict() for l in logs])
+        return jsonify({
+            "entries": [l.to_dict() for l in logs],
+            "total":   total,
+            "offset":  offset,
+            "limit":   limit,
+        })
     finally:
         db.close()
 

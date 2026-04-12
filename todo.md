@@ -43,7 +43,7 @@
 - [ ] **Notification tap — deep link and refresh** — tapping a preheat or session-ending notification should navigate directly to the relevant booking slot *and* immediately re-fetch booking and sauna status rather than showing stale data
 - [ ] **Push re-subscribe on VAPID key rotation** — if VAPID keys are regenerated, existing subscriptions silently break; detect 410/404 from the push service, delete the stale DB record, and prompt the user to re-enable notifications
 - [ ] **Friendlier Harvia error messages** — when the Harvia device is offline, the toast shows a raw exception string; map common failure modes to human-readable messages (e.g. "Sauna device is unreachable — check its WiFi")
-- [ ] **Control log pagination** — the admin control log loads all records with no limit; add pagination or a "load more" button before the log grows unwieldy
+- [x] **Control log pagination** — the admin control log loads all records with no limit; add pagination or a "load more" button before the log grows unwieldy
 - [ ] **Admin pending-count badge** — currently re-polls every 2 min even when not on the Admin tab; only poll when the badge is visible or the tab is active
 - [ ] **Smarter Controls unlock window** — currently unlocks 90 min before any booking; expose this as a configurable admin setting
 
