@@ -906,6 +906,58 @@ def sauna_status():
         return err(str(exc), 502)
 
 
+def _auto_create_booking(member_id: int, member_name: str, target_c: int, on_time_mins: int) -> None:
+    """Create a tracking booking when the sauna is turned on ad-hoc (no prior booking).
+
+    Best-effort — never raises.  Skipped if the member already has an active
+    booking today so we don't double-up on real scheduled sessions.
+    """
+    try:
+        now = app_now()
+        today = now.date()
+        start = now.time().replace(second=0, microsecond=0)
+        end_dt = now + timedelta(minutes=on_time_mins)
+        end = end_dt.time().replace(second=0, microsecond=0)
+
+        db = SessionLocal()
+        try:
+            existing = (
+                db.query(Booking)
+                .filter(
+                    Booking.member_id == member_id,
+                    Booking.date == today,
+                    Booking.status.in_(["scheduled", "preheating", "active"]),
+                )
+                .first()
+            )
+            if existing:
+                logger.debug(
+                    "Auto-booking skipped — %s already has booking #%d today",
+                    member_name, existing.id,
+                )
+                return
+
+            booking = Booking(
+                member_id=member_id,
+                date=today,
+                start_time=start,
+                end_time=end,
+                target_temp=target_c,
+                on_time=on_time_mins,
+                status="preheating",
+            )
+            db.add(booking)
+            db.commit()
+            logger.info(
+                "Auto-booking created for %s: %s–%s %d°C %d min",
+                member_name, start.strftime("%H:%M"), end.strftime("%H:%M"), target_c, on_time_mins,
+            )
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("Auto-booking creation failed (non-fatal): %s", exc)
+
+
 @app.route("/api/sauna/on", methods=["POST"])
 def sauna_on():
     db, member, error = require_auth()
@@ -933,6 +985,7 @@ def sauna_on():
     try:
         logger.info("sauna/on → turn_on(target_c=%d °C / %d °F, on_time=%d min)", target_c, c_to_f(target_c), on_time)
         get_harvia().turn_on(target_c, on_time)
+        _auto_create_booking(mid, mname, target_c, on_time)
         _log_sauna_action(mid, mname, "on", target_temp=target_c, on_time=on_time)
         _notify_admins_push({
             "title": "🔥 Sauna is on",
