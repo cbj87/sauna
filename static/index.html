@@ -144,38 +144,63 @@ function Skeleton({ className = '' }) {
 
 // ─── pull-to-refresh ─────────────────────────────────────────────────────────
 function usePullToRefresh(onRefresh, enabled) {
-  const [pullY, setPullY] = useState(0);
+  const [pullY, setPullY]       = useState(0);
   const [refreshing, setRefreshing] = useState(false);
-  const startY = useRef(0);
-  const active = useRef(false);
+  const startY      = useRef(0);
+  const active      = useRef(false);
+  const pullYRef    = useRef(0);   // avoids stale state in async onTouchEnd
+  const onRefreshRef  = useRef(onRefresh);
+  const enabledRef    = useRef(enabled);
+  useEffect(() => { onRefreshRef.current = onRefresh; });
+  useEffect(() => { enabledRef.current  = enabled;   });
   const THRESHOLD = 64;
 
-  function onTouchStart(e) {
-    if (!enabled || window.scrollY > 0) return;
-    startY.current = e.touches[0].clientY;
-    active.current = true;
-  }
-  function onTouchMove(e) {
-    if (!active.current) return;
-    const dy = e.touches[0].clientY - startY.current;
-    if (dy > 0 && window.scrollY === 0) {
-      setPullY(Math.min(dy * 0.45, THRESHOLD + 20)); // resistance feel
-    } else {
+  useEffect(() => {
+    function onTouchStart(e) {
+      if (!enabledRef.current || window.scrollY > 0) return;
+      startY.current    = e.touches[0].clientY;
+      active.current    = true;
+      pullYRef.current  = 0;
+    }
+    function onTouchMove(e) {
+      if (!active.current) return;
+      const dy = e.touches[0].clientY - startY.current;
+      if (dy > 0 && window.scrollY === 0) {
+        e.preventDefault();   // must be non-passive to work in iOS PWA
+        const next = Math.min(dy * 0.45, THRESHOLD + 20);
+        pullYRef.current = next;
+        setPullY(next);
+      } else {
+        active.current   = false;
+        pullYRef.current = 0;
+        setPullY(0);
+      }
+    }
+    async function onTouchEnd() {
+      if (!active.current) return;
       active.current = false;
+      const captured = pullYRef.current;
+      pullYRef.current = 0;
       setPullY(0);
+      if (captured >= THRESHOLD) {
+        setRefreshing(true);
+        try { await onRefreshRef.current(); } finally { setRefreshing(false); }
+      }
     }
-  }
-  async function onTouchEnd() {
-    if (!active.current) return;
-    active.current = false;
-    if (pullY >= THRESHOLD) {
-      setRefreshing(true);
-      try { await onRefresh(); } finally { setRefreshing(false); }
-    }
-    setPullY(0);
-  }
+    // touchmove MUST be non-passive so e.preventDefault() suppresses
+    // the browser's native overscroll — the old React synthetic handlers
+    // are passive-only and can't do this.
+    document.addEventListener('touchstart', onTouchStart, { passive: true });
+    document.addEventListener('touchmove',  onTouchMove,  { passive: false });
+    document.addEventListener('touchend',   onTouchEnd,   { passive: true });
+    return () => {
+      document.removeEventListener('touchstart', onTouchStart);
+      document.removeEventListener('touchmove',  onTouchMove);
+      document.removeEventListener('touchend',   onTouchEnd);
+    };
+  }, []); // stable — all mutable state accessed via refs
 
-  return { pullY, refreshing, atThreshold: pullY >= THRESHOLD, handlers: { onTouchStart, onTouchMove, onTouchEnd } };
+  return { pullY, refreshing, atThreshold: pullY >= THRESHOLD };
 }
 
 // ─── status pill ─────────────────────────────────────────────────────────────
@@ -1376,6 +1401,7 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
   const [log, setLog] = useState(null);
   const [logTotal, setLogTotal] = useState(0);
   const [logLoadingMore, setLogLoadingMore] = useState(false);
+  const [expandedLogId, setExpandedLogId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [apiStats, setApiStats] = useState(null);
   const [statsOpen, setStatsOpen] = useState(false);
@@ -1433,16 +1459,17 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
   }
   async function loadLog() {
     try {
-      const res = await api('/api/admin/control_log');
+      const res = await api('/api/admin/control_log?limit=5');
       setLog(res.entries);
       setLogTotal(res.total);
+      setExpandedLogId(null);
     } catch {}
   }
   async function loadMoreLog() {
     if (!log) return;
     setLogLoadingMore(true);
     try {
-      const res = await api(`/api/admin/control_log?offset=${log.length}`);
+      const res = await api(`/api/admin/control_log?limit=5&offset=${log.length}`);
       setLog(prev => [...prev, ...res.entries]);
       setLogTotal(res.total);
     } catch {}
@@ -1540,7 +1567,7 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
     const d = new Date(iso + 'Z');
     return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' + d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
   }
-  const actionColors = { on:'bg-green-900 text-green-300', off:'bg-gray-700 text-gray-400', set:'bg-blue-900 text-blue-300', preset:'bg-purple-900 text-purple-300' };
+  const actionColors = { on:'bg-green-900 text-green-300', off:'bg-gray-700 text-gray-400', set:'bg-blue-900 text-blue-300', extend:'bg-cyan-900 text-cyan-300', preset:'bg-purple-900 text-purple-300' };
 
   return (
     <div className="space-y-5">
@@ -1728,18 +1755,72 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
         ) : (
           <>
             <div className="space-y-1.5">
-              {log.map(entry => (
-                <div key={entry.id} className="flex items-center gap-2 bg-gray-700/50 rounded-lg px-3 py-2 text-sm flex-wrap">
-                  <span className="text-gray-500 text-xs w-32 flex-shrink-0">{fmtLogTime(entry.created_at)}</span>
-                  <span className="font-semibold text-white w-20 truncate flex-shrink-0">{entry.member_name || '—'}</span>
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${actionColors[entry.action] || 'bg-gray-700 text-gray-300'}`}>
-                    {entry.preset_name || entry.action}
-                  </span>
-                  {entry.target_temp_f != null && <span className="text-orange-400 font-semibold">{entry.target_temp_f}°F</span>}
-                  {entry.on_time != null && <span className="text-gray-400">{entry.on_time} min</span>}
-                  {entry.notes && <span className="text-gray-600 text-xs truncate">{entry.notes}</span>}
-                </div>
-              ))}
+              {log.map(entry => {
+                const isExpanded = expandedLogId === entry.id;
+                let parsedNotes = null;
+                try { parsedNotes = entry.notes ? JSON.parse(entry.notes) : null; } catch {}
+                return (
+                  <div key={entry.id} className="bg-gray-700/50 rounded-lg overflow-hidden">
+                    {/* summary row — tap to expand */}
+                    <button onClick={() => setExpandedLogId(isExpanded ? null : entry.id)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm flex-wrap text-left">
+                      <span className="text-gray-500 text-xs w-32 flex-shrink-0">{fmtLogTime(entry.created_at)}</span>
+                      <span className="font-semibold text-white w-20 truncate flex-shrink-0">{entry.member_name || '—'}</span>
+                      <span className={`text-xs font-bold px-2 py-0.5 rounded-full flex-shrink-0 ${actionColors[entry.action] || 'bg-gray-700 text-gray-300'}`}>
+                        {entry.preset_name || entry.action}
+                      </span>
+                      {entry.target_temp_f != null && <span className="text-orange-400 font-semibold">{entry.target_temp_f}°F</span>}
+                      {entry.on_time != null && <span className="text-gray-400">{entry.on_time} min</span>}
+                      <span className="ml-auto text-gray-600 text-xs">{isExpanded ? '▲' : '▼'}</span>
+                    </button>
+                    {/* expanded detail panel */}
+                    {isExpanded && (
+                      <div className="border-t border-gray-600/50 px-3 py-2.5 space-y-1 text-xs">
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Timestamp</span>
+                          <span className="text-gray-300 font-mono">{new Date(entry.created_at + 'Z').toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Member</span>
+                          <span className="text-gray-300">{entry.member_name || '—'} (id {entry.member_id})</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Action</span>
+                          <span className={`font-bold px-1.5 py-0.5 rounded ${actionColors[entry.action] || 'bg-gray-700 text-gray-300'}`}>{entry.action}</span>
+                        </div>
+                        {entry.target_temp != null && (
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Temperature sent</span>
+                            <span className="text-orange-400 font-semibold">{entry.target_temp_f}°F ({entry.target_temp}°C)</span>
+                          </div>
+                        )}
+                        {entry.on_time != null && (
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Duration sent</span>
+                            <span className="text-gray-300">{entry.on_time} min</span>
+                          </div>
+                        )}
+                        {entry.preset_name && (
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Preset</span>
+                            <span className="text-purple-300">{entry.preset_name}</span>
+                          </div>
+                        )}
+                        {parsedNotes && Object.entries(parsedNotes).map(([k, v]) => (
+                          <div key={k} className="flex justify-between">
+                            <span className="text-gray-500">{k}</span>
+                            <span className="text-gray-300">{String(v)}</span>
+                          </div>
+                        ))}
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Log entry #</span>
+                          <span className="text-gray-600 font-mono">{entry.id}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
             {log.length < logTotal && (
               <button onClick={loadMoreLog} disabled={logLoadingMore}
@@ -2307,7 +2388,7 @@ function MainApp({ currentMember, onLogout }) {
     } catch(e) { toast(e.message, 'error'); }
   }
 
-  const { pullY, refreshing: pullRefreshing, atThreshold, handlers: pullHandlers } = usePullToRefresh(
+  const { pullY, refreshing: pullRefreshing, atThreshold } = usePullToRefresh(
     () => Promise.all([loadBookings(), loadStatus()]),
     true   // enabled on all tabs
   );
@@ -2452,7 +2533,7 @@ function MainApp({ currentMember, onLogout }) {
       })()}
 
       {/* content */}
-      <main className="pwa-main px-4 py-5 pb-28 space-y-5" {...pullHandlers}>
+      <main className="pwa-main px-4 py-5 pb-28 space-y-5">
 
         {/* pull-to-refresh indicator — shown on all tabs */}
         {(pullY > 0 || pullRefreshing) && (

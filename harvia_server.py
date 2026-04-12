@@ -988,7 +988,8 @@ def sauna_on():
         logger.info("sauna/on → turn_on(target_c=%d °C / %d °F, on_time=%d min)", target_c, c_to_f(target_c), on_time)
         get_harvia().turn_on(target_c, on_time)
         _auto_create_booking(mid, mname, target_c, on_time)
-        _log_sauna_action(mid, mname, "on", target_temp=target_c, on_time=on_time)
+        _log_sauna_action(mid, mname, "on", target_temp=target_c, on_time=on_time,
+                          notes=json.dumps({"target_f": c_to_f(target_c)}))
         _notify_admins_push({
             "title": "🔥 Sauna is on",
             "body": f"{mname} started a session — {c_to_f(target_c)}°F ({target_c}°C) for {on_time} min.",
@@ -1085,7 +1086,9 @@ def sauna_extend():
         get_harvia().turn_off()
         _time.sleep(1.5)
         get_harvia().turn_on(target_temp, new_on_time)
-        _log_sauna_action(mid, mname, "set", on_time=new_on_time, notes=json.dumps({"extend": add_minutes}))
+        _log_sauna_action(mid, mname, "extend", target_temp=target_temp, on_time=new_on_time,
+                          notes=json.dumps({"added_mins": add_minutes, "prev_remaining": client_remaining,
+                                            "target_f": c_to_f(target_temp)}))
         return jsonify({"ok": True, "addedMinutes": add_minutes, "newOnTime": new_on_time})
     except Exception as exc:
         logger.error("Extend session failed: %s", exc)
@@ -1125,7 +1128,8 @@ def sauna_set():
         log_target = payload.get("targetTemp")
         log_on_time = payload.get("onTime")
         extra = {k: v for k, v in payload.items() if k not in ("targetTemp", "onTime", "active")}
-        notes = json.dumps(extra) if extra else None
+        diag = {**({"target_f": c_to_f(log_target)} if log_target else {}), **extra}
+        notes = json.dumps(diag) if diag else None
 
         if "onTime" in payload and "targetTemp" in payload:
             # Device only registers onTime changes on an active 0→1 transition.
@@ -1287,7 +1291,7 @@ def admin_control_log():
     if error:
         return error
     try:
-        limit  = min(int(request.args.get("limit",  50)), 200)
+        limit  = min(int(request.args.get("limit",   5)), 200)
         offset = max(int(request.args.get("offset",  0)),   0)
         total  = db.query(ControlLog).count()
         logs   = (
