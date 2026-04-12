@@ -15,12 +15,12 @@
 
 ## ✨ New Features
 
-- [ ] **Change own PIN** — users have no way to change their PIN after signup; add a "Change PIN" option in member settings
-- [ ] **PIN reset** — admin can reset any member's PIN; member gets a one-time reset flow
+- [x] **Change own PIN** — users have no way to change their PIN after signup; add a "Change PIN" option in member settings
+- [x] **PIN reset** — admin can reset any member's PIN via the Admin tab using a PIN pad
 - [x] **"Book now" quick action** — single tap on the Controls tab that books an immediate session using member defaults; skips the full modal for the common case of "I'm about to use the sauna right now"
-- [ ] **Booking modification** — allow editing start time, duration, and temp after creation, not just cancelling
-- [ ] **Booking beyond 7 days** — the date picker is capped at 7 days out; allow booking further ahead (configurable window)
-- [ ] **Booking history** — view past sessions; basic usage stats per member (total sessions, total hours, favourite temp)
+- [x] **Booking modification** — allow editing start time, duration, temp, and date after creation, not just cancelling
+- [x] **Booking beyond 7 days** — configurable via `BOOKING_WINDOW_DAYS` env var (default 30); served from `/api/config`; booking modal date picker respects it
+- [x] **Booking history** — view past sessions; basic usage stats per member (total sessions, total hours, favourite temp)
 - [ ] **Push notifications — booking approved** — notify a member when their signup is approved by admin
 - [ ] **Push notifications — sauna ready** — notify the booking owner when the sauna reaches target temp (requires polling status during preheat)
 - [ ] **Notification when a booking is cancelled** — notify the booking owner (and optionally admin) if a session is cancelled; currently only creation triggers a notification
