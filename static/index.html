@@ -952,7 +952,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
   async function handleSet() {
     setLoading(true);
     try {
-      await api('/api/sauna/set', {method:'POST', body:{targetTempF: Math.min(tempF, myMaxTempF), onTime: duration}});
+      await api('/api/sauna/set', {method:'POST', body:{active: 1, targetTempF: Math.min(tempF, myMaxTempF), onTime: duration}});
       toast('Settings updated', 'success');
       setTimeout(onRefresh, 1000);
     } catch(e) { toast(e.message, 'error'); }

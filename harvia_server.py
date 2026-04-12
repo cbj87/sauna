@@ -1024,7 +1024,7 @@ def sauna_extend():
             # Fallback: use current onTime from device state
             current_on_time = status.get("onTime") or add_minutes
             new_on_time = int(current_on_time) + add_minutes
-        get_harvia().set_state({"onTime": new_on_time})
+        get_harvia().set_state({"active": 1, "onTime": new_on_time})
         _log_sauna_action(mid, mname, "set", on_time=new_on_time, notes=json.dumps({"extend": add_minutes}))
         return jsonify({"ok": True, "addedMinutes": add_minutes, "newOnTime": new_on_time})
     except Exception as exc:
