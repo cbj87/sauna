@@ -786,7 +786,7 @@ function MembersPanel({ members, onReload, currentMember }) {
 }
 
 // ─── controls ────────────────────────────────────────────────────────────────
-function Controls({ status, statusUpdatedAt, bookings, members, presets = [], currentMember, onRefresh, toast }) {
+function Controls({ status, statusUpdatedAt, bookings, members, presets = [], currentMember, onRefresh, onBook, toast }) {
   const now = new Date();
   const todayStr = localDate(now);
 
@@ -892,6 +892,31 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
     } finally { setLoading(false); }
   }
 
+  const [bookingNow, setBookingNow] = useState(false);
+
+  async function handleBookNow() {
+    setBookingNow(true);
+    try {
+      const startDate = new Date();
+      const endDate   = new Date(startDate.getTime() + seedDur * 60000);
+      const cappedTempC = myMaxTempC ? Math.min(seedTemp, myMaxTempC) : seedTemp;
+      await api('/api/bookings', {method:'POST', body:{
+        date:        todayStr,
+        start_time:  timeStr(startDate),
+        end_time:    timeStr(endDate),
+        target_temp: cappedTempC,
+        on_time:     seedDur,
+      }});
+      toast('Session booked!', 'success');
+      await api('/api/sauna/on', {method:'POST', body:{targetTempF: cToF(cappedTempC), onTime: seedDur}});
+      toast('Sauna is heating up! 🔥', 'success');
+      if (onBook) onBook();
+      setTimeout(onRefresh, 1500);
+    } catch(e) {
+      toast(e.message, 'error');
+    } finally { setBookingNow(false); }
+  }
+
   async function handlePreset(name) {
     setLoading(true);
     try {
@@ -930,6 +955,21 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
   const remaining = status?.remainingTime;
 
   return (
+    <>
+    {/* Book Now quick action — only shown when controls are locked */}
+    {!unlocked && !isAdmin && (
+      <div className="bg-gray-800 rounded-2xl p-5 mb-4">
+        <h2 className="font-bold text-base mb-1">Quick Start</h2>
+        <p className="text-sm text-gray-400 mb-4">Books a session starting now and turns the sauna on — no form needed.</p>
+        <button onClick={handleBookNow} disabled={bookingNow}
+          className="w-full bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white py-3.5 rounded-xl font-bold text-base transition-all disabled:opacity-50">
+          {bookingNow ? <span className="pulse">…</span> : '🔥 Book & Start Now'}
+        </button>
+        <div className="text-xs text-gray-500 mt-2.5 text-center">
+          {cToF(seedTemp)}°F{myMaxTempC && seedTemp > myMaxTempC ? ` (capped at ${cToF(myMaxTempC)}°F)` : ''} · {seedDur} min · uses your defaults
+        </div>
+      </div>
+    )}
     <div className={`bg-gray-800 rounded-2xl p-5 transition-opacity ${!unlocked?'opacity-50 pointer-events-none':''}`}>
       <div className="flex items-center justify-between mb-4">
         <h2 className="font-bold text-base">Sauna Controls</h2>
@@ -1055,6 +1095,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
         </div>
       )}
     </div>
+    </>
   );
 }
 
@@ -2392,7 +2433,7 @@ function MainApp({ currentMember, onLogout }) {
         )}
 
         {tab === 'controls' && (
-          <Controls status={status} statusUpdatedAt={statusUpdatedAt} bookings={bookings} members={members} presets={presets} currentMember={currentMember} onRefresh={loadStatus} toast={toast} />
+          <Controls status={status} statusUpdatedAt={statusUpdatedAt} bookings={bookings} members={members} presets={presets} currentMember={currentMember} onRefresh={loadStatus} onBook={loadBookings} toast={toast} />
         )}
 
         {tab === 'members' && (

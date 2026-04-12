@@ -17,7 +17,7 @@
 
 - [ ] **Change own PIN** — users have no way to change their PIN after signup; add a "Change PIN" option in member settings
 - [ ] **PIN reset** — admin can reset any member's PIN; member gets a one-time reset flow
-- [ ] **"Book now" quick action** — single tap on the Controls tab that books an immediate session using member defaults; skips the full modal for the common case of "I'm about to use the sauna right now"
+- [x] **"Book now" quick action** — single tap on the Controls tab that books an immediate session using member defaults; skips the full modal for the common case of "I'm about to use the sauna right now"
 - [ ] **Booking modification** — allow editing start time, duration, and temp after creation, not just cancelling
 - [ ] **Booking beyond 7 days** — the date picker is capped at 7 days out; allow booking further ahead (configurable window)
 - [ ] **Booking history** — view past sessions; basic usage stats per member (total sessions, total hours, favourite temp)
