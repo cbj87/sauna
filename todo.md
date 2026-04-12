@@ -7,7 +7,7 @@
 - [x] **Booking modal time picker has no validation** — entering a past time gives a confusing backend error ("end_time must be after start_time") with no inline hint; entering an hour > 23 silently wraps to the next day; show "Start time is in the past" / "Invalid time" inline before the user submits
 - [x] **Extend button has no upper limit** — +15 min can be tapped indefinitely; capped so remaining time never exceeds 30 min (e.g. 25 min left → button adds 5 min); button hidden when already at cap
 - [ ] **Auto-shutoff misses midnight boundary** — the scheduler checks `booking.end_time <= current_time` with the same date; if a booking ends at 23:59, the next day's run sees it as already-past and the sauna is never turned off overnight
-- [ ] **Admin push notification shows °F label but uses °C value** — "Sauna is on — [Name] started session [Temp]°F" sends the raw Celsius value from the DB with an °F unit label; convert properly or use °C consistently in notifications
+- [x] **Admin push notification shows °F label but uses °C value** — already correct; all notification paths use `c_to_f()` and show both units e.g. "194°F (90°C)"
 - [ ] **Pending members see no content** — approved users can view the schedule read-only before booking; pending members see only a waiting screen; let them view the schedule so they know what they're joining
 - [ ] **Bell toggle has no loading/pending state** — during `subscribePush()` the button stays interactive; rapid taps can fire duplicate subscription requests; disable the button and show a spinner while the request is in flight
 
