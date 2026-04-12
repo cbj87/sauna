@@ -969,15 +969,23 @@ def sauna_off():
 
 @app.route("/api/sauna/extend", methods=["POST"])
 def sauna_extend():
-    """Add 15 minutes to the current session.
+    """Add time to the current session.
 
+    Accepts an optional ``minutes`` body parameter (1–30, default 15).
     Reads remainingTime from Harvia telemetry and sends a new onTime of
-    remaining + 15.  Also pushes the booking end_time forward by 15 min.
+    remaining + minutes.  Also pushes the booking end_time forward.
     Only the booking owner or an admin may extend.
     """
     db, member, error = require_auth()
     if error:
         return error
+
+    data = request.get_json(silent=True) or {}
+    try:
+        add_minutes = max(1, min(30, int(data.get("minutes", 15))))
+    except (TypeError, ValueError):
+        add_minutes = 15
+
     try:
         now = app_now()
         today = now.date()
@@ -996,9 +1004,9 @@ def sauna_extend():
             return err("Cannot extend someone else's session", 403)
 
         # Push booking end_time forward
-        new_end_dt = datetime.combine(active_booking.date, active_booking.end_time) + timedelta(minutes=15)
+        new_end_dt = datetime.combine(active_booking.date, active_booking.end_time) + timedelta(minutes=add_minutes)
         active_booking.end_time = new_end_dt.time()
-        active_booking.on_time = (active_booking.on_time or 60) + 15
+        active_booking.on_time = (active_booking.on_time or 60) + add_minutes
         # Allow session-ending reminder to fire again for the new end time
         active_booking.session_ending_notified_at = None
         db.commit()
@@ -1007,18 +1015,18 @@ def sauna_extend():
         db.close()
 
     try:
-        # Get remaining time from the device; fall back to 15 if unavailable
+        # Get remaining time from the device; fall back gracefully if unavailable
         status = get_harvia().get_full_status()
         remaining = status.get("remainingTime")
         if remaining is not None:
-            new_on_time = int(remaining) + 15
+            new_on_time = int(remaining) + add_minutes
         else:
-            # Fallback: use current onTime from device state + 15
-            current_on_time = status.get("onTime") or 15
-            new_on_time = int(current_on_time) + 15
+            # Fallback: use current onTime from device state
+            current_on_time = status.get("onTime") or add_minutes
+            new_on_time = int(current_on_time) + add_minutes
         get_harvia().set_state({"onTime": new_on_time})
-        _log_sauna_action(mid, mname, "set", on_time=new_on_time, notes=json.dumps({"extend": 15}))
-        return jsonify({"ok": True, "addedMinutes": 15, "newOnTime": new_on_time})
+        _log_sauna_action(mid, mname, "set", on_time=new_on_time, notes=json.dumps({"extend": add_minutes}))
+        return jsonify({"ok": True, "addedMinutes": add_minutes, "newOnTime": new_on_time})
     except Exception as exc:
         logger.error("Extend session failed: %s", exc)
         return err(str(exc), 502)
