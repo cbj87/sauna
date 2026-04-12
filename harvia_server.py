@@ -913,6 +913,7 @@ def sauna_on():
         return error
     try:
         body = request.get_json(silent=True) or {}
+        logger.info("sauna/on request body: %s", body)
         target_f = body.get("targetTempF")
         target_c = body.get("targetTemp")
         if target_f is not None:
@@ -930,6 +931,7 @@ def sauna_on():
     finally:
         db.close()
     try:
+        logger.info("sauna/on → turn_on(target_c=%d °C / %d °F, on_time=%d min)", target_c, c_to_f(target_c), on_time)
         get_harvia().turn_on(target_c, on_time)
         _log_sauna_action(mid, mname, "on", target_temp=target_c, on_time=on_time)
         _notify_admins_push({
@@ -1021,8 +1023,8 @@ def sauna_extend():
             new_on_time = int(remaining) + add_minutes
 
         logger.info(
-            "Extend: turning off then on — targetTemp=%d onTime=%d (remaining=%s + %d)",
-            target_temp, new_on_time, client_remaining, add_minutes,
+            "sauna/extend → cycling off→on: target_c=%d °C / %d °F, new_on_time=%d min (remaining=%s + add=%d, no booking modified)",
+            target_temp, c_to_f(target_temp), new_on_time, client_remaining, add_minutes,
         )
         # Cycle off → on so the device resets its countdown to new_on_time.
         get_harvia().turn_off()
@@ -1048,6 +1050,7 @@ def sauna_set():
         return error
     try:
         body = request.get_json(silent=True) or {}
+        logger.info("sauna/set request body: %s", body)
         allowed = {"active", "targetTemp", "onTime", "maxOnTime", "maxTemp", "light", "fan", "steamEn", "targetRh"}
         payload = {k: v for k, v in body.items() if k in allowed}
         if "targetTempF" in body and "targetTemp" not in payload:
@@ -1074,7 +1077,7 @@ def sauna_set():
             # Cycle off → on so the new timer takes effect.
             target_temp = payload["targetTemp"]
             on_time     = int(payload["onTime"])
-            logger.info("Set: cycling off→on — targetTemp=%d onTime=%d", target_temp, on_time)
+            logger.info("sauna/set → cycling off→on: target_c=%d °C / %d °F, on_time=%d min (no booking modified)", target_temp, c_to_f(target_temp), on_time)
             get_harvia().turn_off()
             _time.sleep(1.5)
             get_harvia().turn_on(target_temp, on_time)

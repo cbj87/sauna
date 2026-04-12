@@ -840,16 +840,21 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
   const [tempF, setTempF] = useState(Math.min(cToF(seedTemp), myMaxTempF));
   const [duration, setDuration] = useState(seedDur);
 
-  // Re-sync defaults when members finish loading (or preferences change),
+  // Re-sync sliders when bookings or member profile loads/changes,
   // but only if the user hasn't manually adjusted the sliders.
+  // Priority: booking values > profile defaults.
   const [manuallySet, setManuallySet] = useState(false);
   useEffect(() => {
-    if (manuallySet || !myProfile) return;
-    if (relevantBookings.length === 0) {
+    if (manuallySet) return;
+    if (relevantBookings.length > 0) {
+      const b = relevantBookings[0];
+      setTempF(Math.min(cToF(b.target_temp), myMaxTempF));
+      setDuration(b.on_time);
+    } else if (myProfile) {
       setTempF(cToF(myProfile.default_temp));
       setDuration(myProfile.default_time);
     }
-  }, [myProfile?.default_temp, myProfile?.default_time]);
+  }, [relevantBookings[0]?.id, relevantBookings[0]?.target_temp, relevantBookings[0]?.on_time, myProfile?.default_temp, myProfile?.default_time]);
 
   // Fetch status once when controls become unlocked. After that, only refresh
   // on button press or manual tap — never poll automatically.

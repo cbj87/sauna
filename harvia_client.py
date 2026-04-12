@@ -195,6 +195,7 @@ class HarviaClient:
 
     def set_state(self, payload: dict) -> dict:
         """Send a state-change mutation.  payload keys are writable field names."""
+        logger.info("Harvia set_state payload: %s", payload)
         query = {
             "operationName": "Mutation",
             "variables": {
