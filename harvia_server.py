@@ -67,6 +67,7 @@ harvia: HarviaClient | None = None
 COOLDOWN_MINUTES = 15
 PREHEAT_WINDOW_MINUTES = 90
 WALKUP_WINDOW_MINUTES = 120
+BOOKING_WINDOW_DAYS = int(os.environ.get("BOOKING_WINDOW_DAYS", "30"))
 
 # ---------------------------------------------------------------------------
 # Login rate limiting (in-memory, per IP)
@@ -829,6 +830,26 @@ def admin_update_member(member_id: int):
         db.close()
 
 
+@app.route("/api/admin/members/<int:member_id>/reset-pin", methods=["POST"])
+def admin_reset_pin(member_id: int):
+    db, _, error = require_admin()
+    if error:
+        return error
+    body = request.get_json(silent=True) or {}
+    new_pin = str(body.get("new_pin", "")).strip()
+    if not new_pin or len(new_pin) != 4 or not new_pin.isdigit():
+        return err("new_pin must be exactly 4 digits")
+    try:
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not member:
+            return err("Member not found", 404)
+        member.pin_hash = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
+        db.commit()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
 @app.route("/api/admin/members/<int:member_id>", methods=["DELETE"])
 def admin_delete_member(member_id: int):
     db, admin_member, error = require_admin()
@@ -889,6 +910,34 @@ def update_own_member(member_id: int):
         db.commit()
         db.refresh(target)
         return jsonify(target.to_dict())
+    finally:
+        db.close()
+
+
+@app.route("/api/members/<int:member_id>/change-pin", methods=["POST"])
+def change_pin(member_id: int):
+    """Authenticated users can change their own PIN; admins can change any member's PIN."""
+    db, member, error = require_auth()
+    if error:
+        return error
+    body = request.get_json(silent=True) or {}
+    current_pin = str(body.get("current_pin", "")).strip()
+    new_pin = str(body.get("new_pin", "")).strip()
+    if not current_pin or not new_pin:
+        return err("current_pin and new_pin are required")
+    if len(new_pin) != 4 or not new_pin.isdigit():
+        return err("New PIN must be exactly 4 digits")
+    try:
+        if member.id != member_id and not member.is_admin:
+            return err("Cannot change another member's PIN", 403)
+        target = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not target:
+            return err("Member not found", 404)
+        if not bcrypt.checkpw(current_pin.encode(), target.pin_hash.encode()):
+            return err("Current PIN is incorrect", 401)
+        target.pin_hash = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
+        db.commit()
+        return jsonify({"ok": True})
     finally:
         db.close()
 
@@ -1271,6 +1320,11 @@ def health():
     return jsonify({"ok": True})
 
 
+@app.route("/api/config")
+def get_config():
+    return jsonify({"booking_window_days": BOOKING_WINDOW_DAYS})
+
+
 @app.route("/api/admin/harvia-stats")
 def harvia_stats():
     _, _, error = require_admin()
@@ -1626,6 +1680,14 @@ def edit_booking(booking_id: int):
         if booking.status != "scheduled":
             return err(f"Cannot edit a booking with status '{booking.status}'")
 
+        # Date change
+        new_date = booking.date
+        if "date" in body:
+            try:
+                new_date = date.fromisoformat(body["date"])
+            except ValueError as exc:
+                return err(f"Invalid date: {exc}")
+
         try:
             start = time.fromisoformat(body["start_time"]) if "start_time" in body else booking.start_time
             end   = time.fromisoformat(body["end_time"])   if "end_time"   in body else booking.end_time
@@ -1639,9 +1701,9 @@ def edit_booking(booking_id: int):
         if "on_time" in body:
             on_time = int(body["on_time"])
         elif end > start:
-            on_time = int((datetime.combine(booking.date, end) - datetime.combine(booking.date, start)).seconds / 60)
+            on_time = int((datetime.combine(new_date, end) - datetime.combine(new_date, start)).seconds / 60)
         else:
-            on_time = int((datetime.combine(booking.date + timedelta(days=1), end) - datetime.combine(booking.date, start)).seconds / 60)
+            on_time = int((datetime.combine(new_date + timedelta(days=1), end) - datetime.combine(new_date, start)).seconds / 60)
 
         # Temperature
         target_temp = booking.target_temp
@@ -1650,14 +1712,14 @@ def edit_booking(booking_id: int):
         elif "target_temp" in body:
             target_temp = max(40, min(110, int(body["target_temp"])))
 
-        # Overlap check — exclude the booking being edited
-        cooldown_start = (datetime.combine(booking.date, start) - timedelta(minutes=COOLDOWN_MINUTES)).time()
-        cooldown_end   = (datetime.combine(booking.date, end)   + timedelta(minutes=COOLDOWN_MINUTES)).time()
+        # Overlap check — exclude the booking being edited, use new_date
+        cooldown_start = (datetime.combine(new_date, start) - timedelta(minutes=COOLDOWN_MINUTES)).time()
+        cooldown_end   = (datetime.combine(new_date, end)   + timedelta(minutes=COOLDOWN_MINUTES)).time()
         overlap = (
             db.query(Booking)
             .filter(
                 Booking.id != booking_id,
-                Booking.date == booking.date,
+                Booking.date == new_date,
                 Booking.status != "cancelled",
                 Booking.start_time < cooldown_end,
                 Booking.end_time   > cooldown_start,
@@ -1670,6 +1732,7 @@ def edit_booking(booking_id: int):
                 f"{overlap.end_time.strftime('%H:%M')}) including {COOLDOWN_MINUTES}-min cooldown"
             )
 
+        booking.date       = new_date
         booking.start_time = start
         booking.end_time   = end
         booking.on_time    = on_time
@@ -1679,9 +1742,9 @@ def edit_booking(booking_id: int):
         db.commit()
         db.refresh(booking)
         if not member.is_admin:
-            day = booking.date.day
-            month = booking.date.strftime("%b")
-            weekday = booking.date.strftime("%a")
+            day = new_date.day
+            month = new_date.strftime("%b")
+            weekday = new_date.strftime("%a")
             start_fmt = start.strftime("%I:%M %p").lstrip("0")
             end_fmt = end.strftime("%I:%M %p").lstrip("0")
             _notify_admins_push({
@@ -1744,6 +1807,57 @@ def preheat_booking(booking_id: int):
             "url": "/",
         }, pref_key="sauna_control")
         return jsonify({"ok": True, "status": "preheating"})
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Booking history & member stats
+# ---------------------------------------------------------------------------
+
+@app.route("/api/bookings/history")
+def booking_history():
+    db, member, error = require_auth()
+    if error:
+        return error
+    member_id_param = request.args.get("member_id")
+    try:
+        q = db.query(Booking).filter(Booking.status.in_(["completed", "cancelled"]))
+        if member_id_param:
+            req_id = int(member_id_param)
+            if req_id != member.id and not member.is_admin:
+                return err("Cannot view another member's history", 403)
+            q = q.filter(Booking.member_id == req_id)
+        elif not member.is_admin:
+            q = q.filter(Booking.member_id == member.id)
+        bookings = q.order_by(Booking.date.desc(), Booking.start_time.desc()).limit(50).all()
+        return jsonify([b.to_dict() for b in bookings])
+    finally:
+        db.close()
+
+
+@app.route("/api/members/<int:member_id>/stats")
+def member_stats(member_id: int):
+    db, member, error = require_auth()
+    if error:
+        return error
+    if member.id != member_id and not member.is_admin:
+        return err("Cannot view another member's stats", 403)
+    try:
+        completed = db.query(Booking).filter(
+            Booking.member_id == member_id,
+            Booking.status == "completed",
+        ).all()
+        total_sessions = len(completed)
+        total_mins = sum(b.on_time for b in completed)
+        temps = [b.target_temp for b in completed if b.target_temp]
+        fav_temp_c = max(set(temps), key=temps.count) if temps else None
+        return jsonify({
+            "total_sessions": total_sessions,
+            "total_hours": round(total_mins / 60, 1),
+            "favourite_temp_c": fav_temp_c,
+            "favourite_temp_f": c_to_f(fav_temp_c) if fav_temp_c else None,
+        })
     finally:
         db.close()
 
