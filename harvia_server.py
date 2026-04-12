@@ -10,6 +10,7 @@ import logging
 import os
 import secrets
 import threading
+import time as _time
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -969,12 +970,12 @@ def sauna_off():
 
 @app.route("/api/sauna/extend", methods=["POST"])
 def sauna_extend():
-    """Add time to the current session.
+    """Add time to the running session.
 
-    Accepts an optional ``minutes`` body parameter (1–30, default 15).
-    Reads remainingTime from Harvia telemetry and sends a new onTime of
-    remaining + minutes.  Also pushes the booking end_time forward.
-    Only the booking owner or an admin may extend.
+    The Harvia device only reads onTime when active transitions 0→1, so
+    the only reliable way to update remaining time mid-session is to turn
+    off then immediately turn back on with the new onTime.  The booking
+    is NOT modified — this controls the physical sauna only.
     """
     db, member, error = require_auth()
     if error:
@@ -989,7 +990,6 @@ def sauna_extend():
     try:
         now = app_now()
         today = now.date()
-        # Find the active/preheating booking for today
         active_booking = (
             db.query(Booking)
             .filter(
@@ -1002,51 +1002,34 @@ def sauna_extend():
             return err("No active session to extend")
         if active_booking.member_id != member.id and not member.is_admin:
             return err("Cannot extend someone else's session", 403)
-
-        # Push booking end_time forward
-        new_end_dt = datetime.combine(active_booking.date, active_booking.end_time) + timedelta(minutes=add_minutes)
-        active_booking.end_time = new_end_dt.time()
-        active_booking.on_time = (active_booking.on_time or 60) + add_minutes
-        # Allow session-ending reminder to fire again for the new end time
-        active_booking.session_ending_notified_at = None
-        db.commit()
         mid, mname = member.id, member.name
     finally:
         db.close()
 
     try:
-        # Use remaining + targetTemp supplied by the frontend — avoids an extra
-        # Harvia API round-trip and stale-telemetry problems.
-        # Fall back to a fresh status fetch only when the client didn't send them.
+        # Use values supplied by the frontend to avoid an extra API round-trip.
         client_remaining   = data.get("remaining")
         client_target_temp = data.get("targetTemp")
 
         if client_remaining is not None and client_target_temp is not None:
             new_on_time = int(client_remaining) + add_minutes
             target_temp = int(client_target_temp)
-            logger.info(
-                "Extend: client remaining=%s + %d = %d, targetTemp=%d",
-                client_remaining, add_minutes, new_on_time, target_temp,
-            )
         else:
-            # Fallback: fetch from device (one extra API call)
             status = get_harvia().get_full_status()
-            device_remaining = status.get("remainingTime")
             target_temp = status.get("targetTemp") or 90
-            if device_remaining is not None:
-                new_on_time = int(device_remaining) + add_minutes
-            else:
-                new_on_time = int(status.get("onTime") or 60) + add_minutes
-            logger.info(
-                "Extend (fallback): device remaining=%s + %d = %d, targetTemp=%d",
-                device_remaining, add_minutes, new_on_time, target_temp,
-            )
+            remaining = status.get("remainingTime") or status.get("onTime") or add_minutes
+            new_on_time = int(remaining) + add_minutes
 
-        payload = {"active": 1, "targetTemp": target_temp, "onTime": new_on_time}
-        logger.info("Extend set_state payload: %s", payload)
-        get_harvia().set_state(payload)
+        logger.info(
+            "Extend: turning off then on — targetTemp=%d onTime=%d (remaining=%s + %d)",
+            target_temp, new_on_time, client_remaining, add_minutes,
+        )
+        # Cycle off → on so the device resets its countdown to new_on_time.
+        get_harvia().turn_off()
+        _time.sleep(1.5)
+        get_harvia().turn_on(target_temp, new_on_time)
         _log_sauna_action(mid, mname, "set", on_time=new_on_time, notes=json.dumps({"extend": add_minutes}))
-        return jsonify({"ok": True, "addedMinutes": add_minutes, "newOnTime": new_on_time, "targetTemp": target_temp})
+        return jsonify({"ok": True, "addedMinutes": add_minutes, "newOnTime": new_on_time})
     except Exception as exc:
         logger.error("Extend session failed: %s", exc)
         return err(str(exc), 502)
@@ -1054,6 +1037,12 @@ def sauna_extend():
 
 @app.route("/api/sauna/set", methods=["POST"])
 def sauna_set():
+    """Update sauna settings mid-session.
+
+    If onTime is included (the Update button sends both temp + duration),
+    the device requires an off→on cycle to register the new timer value.
+    Temperature-only changes are sent directly via set_state.
+    """
     db, member, error = require_auth()
     if error:
         return error
@@ -1065,7 +1054,6 @@ def sauna_set():
             payload["targetTemp"] = f_to_c(float(body["targetTempF"]))
         if "targetTemp" in payload:
             payload["targetTemp"] = max(40, min(110, int(payload["targetTemp"])))
-            # Enforce per-member temperature limit
             if member.max_temp is not None and payload["targetTemp"] > member.max_temp:
                 return err(
                     f"Temperature exceeds your limit of {c_to_f(member.max_temp)}°F ({member.max_temp}°C)", 400
@@ -1080,7 +1068,20 @@ def sauna_set():
         log_on_time = payload.get("onTime")
         extra = {k: v for k, v in payload.items() if k not in ("targetTemp", "onTime", "active")}
         notes = json.dumps(extra) if extra else None
-        get_harvia().set_state(payload)
+
+        if "onTime" in payload and "targetTemp" in payload:
+            # Device only registers onTime changes on an active 0→1 transition.
+            # Cycle off → on so the new timer takes effect.
+            target_temp = payload["targetTemp"]
+            on_time     = int(payload["onTime"])
+            logger.info("Set: cycling off→on — targetTemp=%d onTime=%d", target_temp, on_time)
+            get_harvia().turn_off()
+            _time.sleep(1.5)
+            get_harvia().turn_on(target_temp, on_time)
+        else:
+            # Temperature-only or other field changes — send directly.
+            get_harvia().set_state(payload)
+
         _log_sauna_action(mid, mname, "set", target_temp=log_target, on_time=log_on_time, notes=notes)
         return jsonify({"ok": True, "applied": payload})
     except Exception as exc:
