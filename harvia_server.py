@@ -1015,18 +1015,38 @@ def sauna_extend():
         db.close()
 
     try:
-        # Get remaining time from the device; fall back gracefully if unavailable
-        status = get_harvia().get_full_status()
-        remaining = status.get("remainingTime")
-        if remaining is not None:
-            new_on_time = int(remaining) + add_minutes
+        # Use remaining + targetTemp supplied by the frontend — avoids an extra
+        # Harvia API round-trip and stale-telemetry problems.
+        # Fall back to a fresh status fetch only when the client didn't send them.
+        client_remaining   = data.get("remaining")
+        client_target_temp = data.get("targetTemp")
+
+        if client_remaining is not None and client_target_temp is not None:
+            new_on_time = int(client_remaining) + add_minutes
+            target_temp = int(client_target_temp)
+            logger.info(
+                "Extend: client remaining=%s + %d = %d, targetTemp=%d",
+                client_remaining, add_minutes, new_on_time, target_temp,
+            )
         else:
-            # Fallback: use current onTime from device state
-            current_on_time = status.get("onTime") or add_minutes
-            new_on_time = int(current_on_time) + add_minutes
-        get_harvia().set_state({"active": 1, "onTime": new_on_time})
+            # Fallback: fetch from device (one extra API call)
+            status = get_harvia().get_full_status()
+            device_remaining = status.get("remainingTime")
+            target_temp = status.get("targetTemp") or 90
+            if device_remaining is not None:
+                new_on_time = int(device_remaining) + add_minutes
+            else:
+                new_on_time = int(status.get("onTime") or 60) + add_minutes
+            logger.info(
+                "Extend (fallback): device remaining=%s + %d = %d, targetTemp=%d",
+                device_remaining, add_minutes, new_on_time, target_temp,
+            )
+
+        payload = {"active": 1, "targetTemp": target_temp, "onTime": new_on_time}
+        logger.info("Extend set_state payload: %s", payload)
+        get_harvia().set_state(payload)
         _log_sauna_action(mid, mname, "set", on_time=new_on_time, notes=json.dumps({"extend": add_minutes}))
-        return jsonify({"ok": True, "addedMinutes": add_minutes, "newOnTime": new_on_time})
+        return jsonify({"ok": True, "addedMinutes": add_minutes, "newOnTime": new_on_time, "targetTemp": target_temp})
     except Exception as exc:
         logger.error("Extend session failed: %s", exc)
         return err(str(exc), 502)

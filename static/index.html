@@ -962,7 +962,13 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
   async function handleExtend() {
     setLoading(true);
     try {
-      await api('/api/sauna/extend', {method:'POST', body:{minutes: extendMins}});
+      // Pass remaining + targetTemp so the backend doesn't need an extra
+      // Harvia API round-trip to read them — avoids stale-telemetry issues.
+      await api('/api/sauna/extend', {method:'POST', body:{
+        minutes:    extendMins,
+        remaining:  remaining,          // current remaining minutes (from status)
+        targetTemp: status?.targetTemp, // current target °C (from reported state)
+      }});
       toast(`+${extendMins} min added!`, 'success');
       setTimeout(onRefresh, 1000);
     } catch(e) { toast(e.message, 'error'); }
