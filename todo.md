@@ -59,7 +59,7 @@
 - [ ] **Toasts not manually dismissible** — error toasts auto-disappear after 3.5s even when the user is still reading; tap-to-dismiss would prevent messages vanishing before the user can act
 - [ ] **Toast overflow on small screens** — long error messages get cut off; add `word-wrap` and `max-width` so the full message is always readable
 - [ ] **Install banner close button touch target too small** — the ✕ dismiss button uses minimal padding, well below the 44px Apple HIG minimum; easy to mis-tap on small phones
-- [ ] **Splash screen for iOS PWA** — add `apple-touch-startup-image` meta tags so the installed iOS PWA shows the app background instead of a white flash on launch
+- [x] **Splash screen for iOS PWA** — add `apple-touch-startup-image` meta tags so the installed iOS PWA shows the app background instead of a white flash on launch
 - [ ] **Colour conflict warning** — warn or prevent two members from using the same timeline colour so the schedule stays readable
 - [ ] **Member colour picker — more options** — offer a larger palette or hex input so members can pick a truly unique colour
 - [ ] **Onboarding tip for new members** — after a member is approved, show a brief one-time walkthrough (3 steps: how to book, how to preheat, how to enable notifications)
