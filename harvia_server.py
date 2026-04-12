@@ -18,6 +18,8 @@ import bcrypt
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, jsonify, request, send_from_directory, session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.types import Integer as _SAInteger, Date as _SADate, Time as _SATime, Boolean as _SABoolean
 
 from harvia_client import HarviaClient
 from models import DB_PATH, Booking, ControlLog, FamilyMember, Preset, PushSubscription, SessionLocal, init_db
@@ -1792,12 +1794,39 @@ def db_update(table: str, row_id: int):
         if not row:
             return err("Row not found", 404)
         body = request.get_json(silent=True) or {}
+
+        # The browser sends every field as a string (from <input> values).
+        # Coerce each value to the correct Python type before setattr so
+        # SQLAlchemy 2.0's strict type processing doesn't blow up.
+        col_types = {
+            c.key: c.columns[0].type
+            for c in sa_inspect(model).mapper.column_attrs
+        }
         for field, value in body.items():
-            if field in editable:
-                setattr(row, field, value)
+            if field not in editable:
+                continue
+            col_type = col_types.get(field)
+            if value == "" or value is None:
+                coerced = None
+            elif isinstance(col_type, _SAInteger) and isinstance(value, str):
+                coerced = int(value)
+            elif isinstance(col_type, _SADate) and isinstance(value, str):
+                coerced = date.fromisoformat(value)
+            elif isinstance(col_type, _SATime) and isinstance(value, str):
+                parts = value.split(":")
+                coerced = time(int(parts[0]), int(parts[1]), int(parts[2]) if len(parts) > 2 else 0)
+            elif isinstance(col_type, _SABoolean) and isinstance(value, str):
+                coerced = value.lower() in ("true", "1", "yes")
+            else:
+                coerced = value
+            setattr(row, field, coerced)
+
         db.commit()
         db.refresh(row)
         return jsonify(row.to_dict())
+    except Exception as exc:
+        logger.error("db_update failed for %s #%d: %s", table, row_id, exc)
+        return err(str(exc), 500)
     finally:
         db.close()
 
