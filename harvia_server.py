@@ -629,26 +629,36 @@ scheduler.add_job(refresh_harvia_token,    "interval", minutes=30,  id="token_re
 
 @app.route("/api/auth/signup", methods=["POST"])
 def signup():
+    import re
     body = request.get_json(silent=True) or {}
-    name = body.get("name", "").strip()
-    pin = str(body.get("pin", "")).strip()
-    color = body.get("color", "#F97316")
+    name     = body.get("name", "").strip()
+    email    = body.get("email", "").strip().lower()
+    password = body.get("password", "")
+    color    = body.get("color", "#F97316")
 
     if not name:
         return err("Name is required")
-    if not pin or len(pin) != 4 or not pin.isdigit():
-        return err("PIN must be exactly 4 digits")
+    if not email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return err("A valid email address is required")
+    pw_err = _validate_password(password)
+    if pw_err:
+        return err(pw_err)
 
     db = SessionLocal()
     try:
+        # Check email uniqueness
+        if db.query(FamilyMember).filter(FamilyMember.email == email).first():
+            return err("An account with that email already exists", 409)
+
         # First-ever signup is auto-approved as admin
         existing_count = db.query(FamilyMember).count()
         is_first = existing_count == 0
 
-        pin_hash = bcrypt.hashpw(pin.encode(), bcrypt.gensalt()).decode()
+        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         member = FamilyMember(
             name=name,
-            pin_hash=pin_hash,
+            email=email,
+            password_hash=password_hash,
             status="approved" if is_first else "pending",
             is_admin=1 if is_first else 0,
             color=color,
@@ -657,14 +667,13 @@ def signup():
         db.commit()
         db.refresh(member)
 
-        if is_first:
-            session.permanent = True
-            session["member_id"] = member.id
-            return jsonify({"ok": True, "status": "approved", "member": member.to_dict(), "csrf_token": _generate_csrf_token()}), 201
-
         session.permanent = True
         session["member_id"] = member.id
         csrf = _generate_csrf_token()
+
+        if is_first:
+            return jsonify({"ok": True, "status": "approved", "member": member.to_dict(), "csrf_token": csrf}), 201
+
         _notify_admins_push({
             "title": "👤 New signup",
             "body": f"{name} wants to join — approve them in the Admin tab.",
@@ -684,30 +693,25 @@ def login():
         return err("Too many failed attempts — please wait 15 minutes before trying again.", 429)
 
     body = request.get_json(silent=True) or {}
-    member_id = body.get("member_id")
-    pin = str(body.get("pin", "")).strip()
+    email    = body.get("email", "").strip().lower()
+    password = body.get("password", "")
 
-    if not member_id or not pin:
-        return err("member_id and pin are required")
-
-    try:
-        member_id = int(member_id)
-    except (ValueError, TypeError):
-        return err("Invalid member_id", 400)
+    if not email or not password:
+        return err("Email and password are required")
 
     db = SessionLocal()
     try:
-        member = db.query(FamilyMember).filter_by(id=member_id).first()
-        if not member or not member.pin_hash:
+        member = db.query(FamilyMember).filter(FamilyMember.email == email).first()
+        if not member or not member.password_hash:
             _record_failed_attempt(ip)
-            return err("Invalid credentials", 401)
+            return err("Invalid email or password", 401)
         if member.status == "pending":
             return err("Your account is waiting for approval", 403)
         if member.status == "rejected":
             return err("Your account request was not approved", 403)
-        if not bcrypt.checkpw(pin.encode(), member.pin_hash.encode()):
+        if not bcrypt.checkpw(password.encode(), member.password_hash.encode()):
             remaining = _record_failed_attempt(ip)
-            msg = "Invalid PIN"
+            msg = "Invalid email or password"
             if remaining <= 3:
                 msg += f" — {remaining} attempt{'s' if remaining != 1 else ''} remaining before lockout"
             return err(msg, 401)
