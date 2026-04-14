@@ -349,7 +349,7 @@ def _generate_csrf_token() -> str:
 
 
 # Endpoints that don't require a CSRF token (pre-authentication flows).
-_CSRF_EXEMPT = {"login", "signup", "static"}
+_CSRF_EXEMPT = {"login", "signup", "migrate", "static"}
 
 
 @app.before_request
@@ -717,6 +717,56 @@ def login():
             return err(msg, 401)
 
         _clear_attempts(ip)
+        session.permanent = True
+        session["member_id"] = member.id
+        return jsonify({"ok": True, "member": member.to_dict(), "csrf_token": _generate_csrf_token()})
+    finally:
+        db.close()
+
+
+@app.route("/api/auth/migrate", methods=["POST"])
+def migrate():
+    """Let an existing PIN-only user link email/password to their account."""
+    import re
+    body      = request.get_json(silent=True) or {}
+    member_id = body.get("member_id")
+    pin       = str(body.get("pin", "")).strip()
+    email     = body.get("email", "").strip().lower()
+    password  = body.get("password", "")
+
+    if not member_id or not pin:
+        return err("member_id and pin are required")
+    try:
+        member_id = int(member_id)
+    except (ValueError, TypeError):
+        return err("Invalid member_id", 400)
+
+    if not email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return err("A valid email address is required")
+    pw_err = _validate_password(password)
+    if pw_err:
+        return err(pw_err)
+
+    db = SessionLocal()
+    try:
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not member or not member.pin_hash:
+            return err("Invalid credentials", 401)
+        if member.email is not None:
+            return err("Account already migrated — please log in with your email", 409)
+        if not bcrypt.checkpw(pin.encode(), member.pin_hash.encode()):
+            return err("Incorrect PIN", 401)
+
+        # Check email uniqueness
+        if db.query(FamilyMember).filter(FamilyMember.email == email).first():
+            return err("An account with that email already exists", 409)
+
+        member.email         = email
+        member.password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        member.pin_hash      = None
+        db.commit()
+        db.refresh(member)
+
         session.permanent = True
         session["member_id"] = member.id
         return jsonify({"ok": True, "member": member.to_dict(), "csrf_token": _generate_csrf_token()})
