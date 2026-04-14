@@ -1996,9 +1996,12 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
   const [editMaxTempId, setEditMaxTempId] = useState(null);
   const [editMaxTempHasLimit, setEditMaxTempHasLimit] = useState(false);
   const [editMaxTempF, setEditMaxTempF] = useState(212);
-  // admin PIN reset
-  const [resetPinId, setResetPinId] = useState(null);
-  const [resetPinError, setResetPinError] = useState('');
+  // admin set-credentials (escape hatch for members who forgot their PIN)
+  const [setCredsId, setSetCredsId]           = useState(null);
+  const [setCredsEmail, setSetCredsEmail]     = useState('');
+  const [setCredsPass, setSetCredsPass]       = useState('');
+  const [setCredsConfirm, setSetCredsConfirm] = useState('');
+  const [setCredsError, setSetCredsError]     = useState('');
 
   async function load() {
     try { setData(await api('/api/admin/members')); } catch {}
@@ -2032,14 +2035,18 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
     finally { setBusy(false); }
   }
 
-  async function handleAdminResetPin(memberId, pin) {
-    setResetPinError('');
+  async function handleSetCredentials(e) {
+    e.preventDefault();
+    if (setCredsPass !== setCredsConfirm) { setSetCredsError('Passwords don\'t match'); return; }
+    if (setCredsPass.length < 8) { setSetCredsError('Password must be at least 8 characters'); return; }
+    setBusy(true);
+    setSetCredsError('');
     try {
-      await api(`/api/admin/members/${memberId}/reset-pin`, {method:'POST', body:{new_pin: pin}});
-      setResetPinId(null);
-    } catch(e) {
-      setResetPinError(e.message);
-    }
+      await api(`/api/admin/members/${setCredsId}/set-credentials`, {method:'PUT', body:{email: setCredsEmail, password: setCredsPass}});
+      setSetCredsId(null); setSetCredsEmail(''); setSetCredsPass(''); setSetCredsConfirm('');
+      await load();
+    } catch(e) { setSetCredsError(e.message); }
+    finally { setBusy(false); }
   }
 
   useEffect(() => { load(); }, []);
@@ -2088,16 +2095,6 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
     }
     catch(e) { alert(e.message); }
     finally { setBusy(false); }
-  }
-
-  async function handleAdminResetPin(memberId, pin) {
-    setResetPinError('');
-    try {
-      await api(`/api/admin/members/${memberId}/reset-pin`, {method:'POST', body:{new_pin: pin}});
-      setResetPinId(null);
-    } catch(e) {
-      setResetPinError(e.message);
-    }
   }
 
   if (!data) return <div className="text-center text-gray-500 py-8 pulse">Loading…</div>;
@@ -2170,8 +2167,10 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
                     <div className="font-semibold">
                       {m.name}
                       {m.is_admin ? <span className="text-xs text-orange-400 ml-1.5">admin</span> : null}
+                      {!m.email ? <span className="text-xs text-amber-600 ml-1.5">PIN only</span> : null}
                     </div>
                     <div className="text-xs text-gray-400">
+                      {m.email ? <span className="text-gray-500 mr-1.5">{m.email} ·</span> : null}
                       {cToF(m.default_temp)}°F · {m.default_time} min
                       {m.max_temp != null
                         ? <span className="text-orange-400 ml-1.5">· max {cToF(m.max_temp)}°F</span>
@@ -2181,10 +2180,12 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
                 </div>
                 {m.id !== currentMember.id && (
                   <div className="flex items-center gap-2">
-                    <button onClick={() => { setResetPinId(resetPinId === m.id ? null : m.id); setResetPinError(''); }} disabled={busy}
-                      className="text-xs text-gray-500 hover:text-orange-400 font-semibold px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors disabled:opacity-50">
-                      {resetPinId === m.id ? 'cancel' : 'pin'}
-                    </button>
+                    {!m.email && (
+                      <button onClick={() => { setSetCredsId(setCredsId === m.id ? null : m.id); setSetCredsEmail(''); setSetCredsPass(''); setSetCredsConfirm(''); setSetCredsError(''); }} disabled={busy}
+                        className="text-xs text-amber-500 hover:text-amber-400 font-semibold px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors disabled:opacity-50">
+                        {setCredsId === m.id ? 'cancel' : 'set creds'}
+                      </button>
+                    )}
                     <button onClick={() => editMaxTempId === m.id ? setEditMaxTempId(null) : startEditMaxTemp(m)} disabled={busy}
                       className="text-xs text-gray-500 hover:text-orange-400 font-semibold px-2 py-1 rounded-lg hover:bg-gray-700 transition-colors disabled:opacity-50">
                       {editMaxTempId === m.id ? 'cancel' : 'limit'}
@@ -2221,11 +2222,23 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
                   </button>
                 </div>
               )}
-              {resetPinId === m.id && (
+              {setCredsId === m.id && (
                 <div className="px-4 pb-4 pt-2 border-t border-gray-600/50 fade-in">
-                  <p className="text-sm text-gray-300 font-semibold mb-3">Set new PIN for {m.name}</p>
-                  {resetPinError && <p className="text-red-400 text-xs mb-3 text-center">{resetPinError}</p>}
-                  <PinPad onComplete={pin => handleAdminResetPin(m.id, pin)} />
+                  <p className="text-sm text-gray-300 font-semibold mb-1">Set credentials for {m.name}</p>
+                  <p className="text-xs text-gray-500 mb-3">Use this if they've forgotten their PIN and can't self-migrate</p>
+                  <form onSubmit={handleSetCredentials} className="space-y-2">
+                    <input type="email" placeholder="Email address" value={setCredsEmail} onChange={e => setSetCredsEmail(e.target.value)} required
+                      className="w-full bg-gray-700 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:ring-2 focus:ring-orange-500" />
+                    <input type="password" placeholder="Password (min 8 chars)" value={setCredsPass} onChange={e => setSetCredsPass(e.target.value)} required
+                      className="w-full bg-gray-700 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:ring-2 focus:ring-orange-500" />
+                    <input type="password" placeholder="Confirm password" value={setCredsConfirm} onChange={e => setSetCredsConfirm(e.target.value)} required
+                      className="w-full bg-gray-700 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:ring-2 focus:ring-orange-500" />
+                    {setCredsError && <p className="text-red-400 text-xs text-center">{setCredsError}</p>}
+                    <button type="submit" disabled={busy}
+                      className="w-full py-2 rounded-xl font-bold text-white bg-amber-600 hover:bg-amber-500 disabled:opacity-50">
+                      Set credentials
+                    </button>
+                  </form>
                 </div>
               )}
             </div>
