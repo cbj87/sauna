@@ -1106,28 +1106,28 @@ def update_own_member(member_id: int):
         db.close()
 
 
-@app.route("/api/members/<int:member_id>/change-pin", methods=["POST"])
-def change_pin(member_id: int):
-    """Authenticated users can change their own PIN; admins can change any member's PIN."""
+@app.route("/api/members/<int:member_id>/change-password", methods=["POST"])
+def change_password(member_id: int):
+    """Authenticated users can change their own password."""
     db, member, error = require_auth()
     if error:
         return error
     body = request.get_json(silent=True) or {}
-    current_pin = str(body.get("current_pin", "")).strip()
-    new_pin = str(body.get("new_pin", "")).strip()
-    if not current_pin or not new_pin:
-        return err("current_pin and new_pin are required")
-    if len(new_pin) != 4 or not new_pin.isdigit():
-        return err("New PIN must be exactly 4 digits")
+    current_password = body.get("current_password", "")
+    new_password     = body.get("new_password", "")
+    if not current_password or not new_password:
+        return err("current_password and new_password are required")
+    pw_err = _validate_password(new_password)
+    if pw_err:
+        return err(pw_err)
     try:
-        if member.id != member_id and not member.is_admin:
-            return err("Cannot change another member's PIN", 403)
-        target = db.query(FamilyMember).filter_by(id=member_id).first()
-        if not target:
-            return err("Member not found", 404)
-        if not bcrypt.checkpw(current_pin.encode(), target.pin_hash.encode()):
-            return err("Current PIN is incorrect", 401)
-        target.pin_hash = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
+        if member.id != member_id:
+            return err("Cannot change another member's password", 403)
+        if not member.password_hash:
+            return err("No password set — use the migration flow to create one", 400)
+        if not bcrypt.checkpw(current_password.encode(), member.password_hash.encode()):
+            return err("Current password is incorrect", 401)
+        member.password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
         db.commit()
         return jsonify({"ok": True})
     finally:

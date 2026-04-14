@@ -711,13 +711,13 @@ function MembersPanel({ members, onReload, currentMember }) {
   const [editingId, setEditingId] = useState(null);
   const [editTempF, setEditTempF] = useState(194);
   const [editDuration, setEditDuration] = useState(60);
-  // PIN change
-  const [pinChangeId, setPinChangeId] = useState(null);
-  const [pinStep, setPinStep] = useState('current'); // 'current' | 'new' | 'confirm'
-  const [savedCurrentPin, setSavedCurrentPin] = useState('');
-  const [savedNewPin, setSavedNewPin] = useState('');
-  const [pinError, setPinError] = useState('');
-  const [pinSuccess, setPinSuccess] = useState(false);
+  // password change
+  const [pwChangeOpen, setPwChangeOpen]     = useState(false);
+  const [pwCurrent, setPwCurrent]           = useState('');
+  const [pwNew, setPwNew]                   = useState('');
+  const [pwConfirm, setPwConfirm]           = useState('');
+  const [pwError, setPwError]               = useState('');
+  const [pwSuccess, setPwSuccess]           = useState(false);
   // Booking history
   const [history, setHistory] = useState(null);
   const [stats, setStats] = useState(null);
@@ -740,9 +740,9 @@ function MembersPanel({ members, onReload, currentMember }) {
     setEditingId(m.id);
     setEditTempF(cToF(m.default_temp));
     setEditDuration(m.default_time);
-    setPinChangeId(null);
-    setPinSuccess(false);
-    setPinError('');
+    setPwChangeOpen(false);
+    setPwSuccess(false);
+    setPwError('');
   }
 
   async function handleSaveEdit(id) {
@@ -753,45 +753,21 @@ function MembersPanel({ members, onReload, currentMember }) {
     } catch(e) { alert(e.message); }
   }
 
-  function startPinChange(memberId) {
-    setPinChangeId(memberId);
-    setPinStep('current');
-    setSavedCurrentPin('');
-    setSavedNewPin('');
-    setPinError('');
-    setPinSuccess(false);
-  }
-
-  async function handlePinChangeStep(memberId, pin) {
-    if (pinStep === 'current') {
-      setSavedCurrentPin(pin);
-      setPinStep('new');
-      setPinError('');
-    } else if (pinStep === 'new') {
-      setSavedNewPin(pin);
-      setPinStep('confirm');
-      setPinError('');
-    } else {
-      if (pin !== savedNewPin) {
-        setPinError('PINs do not match — try again');
-        setPinStep('new');
-        setSavedNewPin('');
-        return;
-      }
-      try {
-        await api(`/api/members/${memberId}/change-pin`, {
-          method: 'POST',
-          body: { current_pin: savedCurrentPin, new_pin: savedNewPin },
-        });
-        setPinChangeId(null);
-        setPinSuccess(true);
-        setPinError('');
-      } catch(e) {
-        setPinError(e.message);
-        setPinStep('current');
-        setSavedCurrentPin('');
-        setSavedNewPin('');
-      }
+  async function handleChangePassword(e, memberId) {
+    e.preventDefault();
+    if (pwNew !== pwConfirm) { setPwError('Passwords don\'t match'); return; }
+    if (pwNew.length < 8)    { setPwError('New password must be at least 8 characters'); return; }
+    setPwError('');
+    try {
+      await api(`/api/members/${memberId}/change-password`, {
+        method: 'POST',
+        body: { current_password: pwCurrent, new_password: pwNew },
+      });
+      setPwChangeOpen(false);
+      setPwCurrent(''); setPwNew(''); setPwConfirm('');
+      setPwSuccess(true);
+    } catch(e) {
+      setPwError(e.message);
     }
   }
 
@@ -894,24 +870,36 @@ function MembersPanel({ members, onReload, currentMember }) {
                     </button>
                     {isMe && (
                       <div className="mt-3 pt-3 border-t border-gray-600/50">
-                        {pinChangeId !== m.id ? (
+                        {!pwChangeOpen ? (
                           <>
-                            {pinSuccess && <p className="text-green-400 text-xs text-center mb-2">✓ PIN changed successfully</p>}
-                            <button onClick={() => startPinChange(m.id)}
+                            {pwSuccess && <p className="text-green-400 text-xs text-center mb-2">✓ Password changed successfully</p>}
+                            <button onClick={() => { setPwChangeOpen(true); setPwSuccess(false); setPwError(''); setPwCurrent(''); setPwNew(''); setPwConfirm(''); }}
                               className="w-full py-2 rounded-xl text-sm font-semibold text-gray-300 bg-gray-700 hover:bg-gray-600 transition-colors">
-                              🔒 Change PIN
+                              🔒 Change password
                             </button>
                           </>
                         ) : (
                           <div className="fade-in">
                             <div className="flex justify-between items-center mb-3">
-                              <span className="text-sm font-semibold text-white">
-                                {pinStep === 'current' ? 'Enter current PIN' : pinStep === 'new' ? 'Enter new PIN' : 'Confirm new PIN'}
-                              </span>
-                              <button onClick={() => setPinChangeId(null)} className="text-xs text-gray-500 hover:text-gray-300">cancel</button>
+                              <span className="text-sm font-semibold text-white">Change password</span>
+                              <button onClick={() => setPwChangeOpen(false)} className="text-xs text-gray-500 hover:text-gray-300">cancel</button>
                             </div>
-                            {pinError && <p className="text-red-400 text-xs mb-3 text-center">{pinError}</p>}
-                            <PinPad onComplete={pin => handlePinChangeStep(m.id, pin)} />
+                            <form onSubmit={e => handleChangePassword(e, m.id)} className="space-y-2">
+                              <input type="password" placeholder="Current password" value={pwCurrent} onChange={e => setPwCurrent(e.target.value)} required
+                                autoComplete="current-password"
+                                className="w-full bg-gray-700 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:ring-2 focus:ring-orange-500" />
+                              <input type="password" placeholder="New password (min 8 chars)" value={pwNew} onChange={e => setPwNew(e.target.value)} required
+                                autoComplete="new-password"
+                                className="w-full bg-gray-700 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:ring-2 focus:ring-orange-500" />
+                              <input type="password" placeholder="Confirm new password" value={pwConfirm} onChange={e => setPwConfirm(e.target.value)} required
+                                autoComplete="new-password"
+                                className="w-full bg-gray-700 rounded-xl px-4 py-2.5 text-white text-sm outline-none focus:ring-2 focus:ring-orange-500" />
+                              {pwError && <p className="text-red-400 text-xs text-center">{pwError}</p>}
+                              <button type="submit"
+                                className="w-full py-2 rounded-xl font-bold text-white bg-orange-500 hover:bg-orange-400 transition-colors">
+                                Update password
+                              </button>
+                            </form>
                           </div>
                         )}
                       </div>
