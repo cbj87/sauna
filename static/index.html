@@ -1271,22 +1271,18 @@ function PinPad({ onComplete }) {
 }
 
 // ─── login screen ─────────────────────────────────────────────────────────────
-function LoginScreen({ onLogin, onShowSignup, sessionExpired }) {
-  const [members, setMembers] = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+function LoginScreen({ onLogin, onShowSignup, onShowMigrate, onShowForgot, sessionExpired }) {
+  const [email, setEmail]       = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError]       = useState('');
+  const [loading, setLoading]   = useState(false);
 
-  useEffect(() => {
-    api('/api/members').then(setMembers).catch(() => {});
-  }, []);
-
-  async function handlePin(pin) {
-    if (!selected) return;
+  async function handleSubmit(e) {
+    e.preventDefault();
     setLoading(true);
     setError('');
     try {
-      const { member, csrf_token } = await api('/api/auth/login', {method:'POST', body:{member_id: selected.id, pin}});
+      const { member, csrf_token } = await api('/api/auth/login', {method:'POST', body:{email, password}});
       if (csrf_token) _csrfToken = csrf_token;
       onLogin(member);
     } catch(e) {
@@ -1299,61 +1295,56 @@ function LoginScreen({ onLogin, onShowSignup, sessionExpired }) {
     <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6">
       <h1 className="text-3xl font-black mb-2">🛖 Sweat Box</h1>
       {sessionExpired && (
-        <div className="mb-4 px-4 py-2.5 bg-amber-900/50 border border-amber-700 rounded-xl text-amber-300 text-sm text-center">
+        <div className="mb-4 px-4 py-2.5 bg-amber-900/50 border border-amber-700 rounded-xl text-amber-300 text-sm text-center w-full max-w-sm">
           Your session expired — please log in again
         </div>
       )}
-      <p className="text-gray-500 text-sm mb-8">Who's booking a sweat?</p>
+      <p className="text-gray-500 text-sm mb-8">Sign in to book a sweat</p>
 
-      {!selected ? (
-        <>
-          <div className="w-full max-w-sm space-y-3 mb-8">
-            {members.map(m => (
-              <button key={m.id} onClick={() => { setSelected(m); setError(''); }}
-                className="w-full flex items-center gap-4 bg-gray-800 hover:bg-gray-700 rounded-2xl px-5 py-4 transition-all">
-                <div className="w-5 h-5 rounded-full flex-shrink-0" style={{background: m.color}} />
-                <span className="font-bold text-lg">{m.name}</span>
-              </button>
-            ))}
-            {members.length === 0 && <p className="text-gray-500 text-center text-sm">No members yet — sign up first!</p>}
-          </div>
-          <button onClick={onShowSignup} className="text-orange-400 hover:text-orange-300 text-sm font-semibold">
-            + New member
-          </button>
-        </>
-      ) : (
-        <div className="w-full max-w-sm">
-          <div className="flex items-center gap-3 mb-6">
-            <button onClick={() => { setSelected(null); setError(''); }} className="text-gray-400 hover:text-white text-lg">←</button>
-            <div className="w-4 h-4 rounded-full" style={{background: selected.color}} />
-            <span className="font-bold text-lg">{selected.name}</span>
-          </div>
-          <p className="text-gray-400 text-sm text-center mb-4">Enter your 4-digit PIN</p>
-          {error && <p className="text-red-400 text-sm text-center mb-3">{error}</p>}
-          {loading
-            ? <p className="text-center text-gray-400 pulse">Checking…</p>
-            : <PinPad onComplete={handlePin} />
-          }
-        </div>
-      )}
+      <form onSubmit={handleSubmit} className="w-full max-w-sm space-y-3">
+        <input
+          type="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)}
+          autoComplete="email" required
+          className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+        <input
+          type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)}
+          autoComplete="current-password" required
+          className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+        {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+        <button type="submit" disabled={loading}
+          className="w-full py-4 rounded-2xl font-bold text-white text-lg bg-orange-500 hover:bg-orange-400 disabled:opacity-50 transition-all">
+          {loading ? <span className="pulse">Signing in…</span> : 'Sign in'}
+        </button>
+      </form>
+
+      <div className="mt-6 flex flex-col items-center gap-3 text-sm">
+        <button onClick={onShowForgot} className="text-gray-400 hover:text-white">Forgot password?</button>
+        <button onClick={onShowMigrate} className="text-gray-400 hover:text-white">Migrating from PIN? Set up your account</button>
+        <button onClick={onShowSignup} className="text-orange-400 hover:text-orange-300 font-semibold">Create account</button>
+      </div>
     </div>
   );
 }
 
 // ─── signup screen ────────────────────────────────────────────────────────────
 function SignupScreen({ onSignup, onBack }) {
-  const [step, setStep] = useState('info'); // info | pin | confirm
-  const [name, setName] = useState('');
-  const [color, setColor] = useState(PALETTE[0]);
-  const [pin, setPin] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [step, setStep]         = useState('info'); // info | credentials
+  const [name, setName]         = useState('');
+  const [color, setColor]       = useState(PALETTE[0]);
+  const [email, setEmail]       = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm]   = useState('');
+  const [error, setError]       = useState('');
+  const [loading, setLoading]   = useState(false);
 
-  async function handleConfirmPin(confirmPin) {
-    if (confirmPin !== pin) { setError('PINs don\'t match — try again'); setStep('pin'); return; }
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (password !== confirm) { setError('Passwords don\'t match'); return; }
+    if (password.length < 8)  { setError('Password must be at least 8 characters'); return; }
     setLoading(true);
+    setError('');
     try {
-      const result = await api('/api/auth/signup', {method:'POST', body:{name, color, pin}});
+      const result = await api('/api/auth/signup', {method:'POST', body:{name, email, password, color}});
       if (result.csrf_token) _csrfToken = result.csrf_token;
       onSignup(result);
     } catch(e) {
@@ -1365,7 +1356,8 @@ function SignupScreen({ onSignup, onBack }) {
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-sm">
-        <button onClick={onBack} className="text-gray-400 hover:text-white text-sm mb-6">← Back</button>
+        <button onClick={step === 'credentials' ? () => setStep('info') : onBack}
+          className="text-gray-400 hover:text-white text-sm mb-6">← Back</button>
         <h2 className="text-2xl font-black mb-6">Join the Sweat Box</h2>
 
         {step === 'info' && (
@@ -1381,7 +1373,7 @@ function SignupScreen({ onSignup, onBack }) {
               ))}
             </div>
             {error && <p className="text-red-400 text-sm text-center mb-3">{error}</p>}
-            <button onClick={() => { if (!name.trim()) { setError('Enter your name'); return; } setError(''); setStep('pin'); }}
+            <button onClick={() => { if (!name.trim()) { setError('Enter your name'); return; } setError(''); setStep('credentials'); }}
               className="w-full py-4 rounded-2xl font-bold text-white text-lg"
               style={{background: color}}>
               Continue
@@ -1389,23 +1381,237 @@ function SignupScreen({ onSignup, onBack }) {
           </>
         )}
 
-        {step === 'pin' && (
+        {step === 'credentials' && (
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <input type="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)}
+              autoComplete="email" required
+              className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+            <input type="password" placeholder="Password (min 8 characters)" value={password} onChange={e => setPassword(e.target.value)}
+              autoComplete="new-password" required
+              className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+            <input type="password" placeholder="Confirm password" value={confirm} onChange={e => setConfirm(e.target.value)}
+              autoComplete="new-password" required
+              className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+            {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+            <button type="submit" disabled={loading}
+              className="w-full py-4 rounded-2xl font-bold text-white text-lg disabled:opacity-50 transition-all"
+              style={{background: color}}>
+              {loading ? <span className="pulse">Creating account…</span> : 'Create account'}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── migrate screen ───────────────────────────────────────────────────────────
+function MigrateScreen({ onLogin, onBack }) {
+  const [step, setStep]           = useState('pick'); // pick | pin | credentials
+  const [members, setMembers]     = useState([]);
+  const [selected, setSelected]   = useState(null);
+  const [pin, setPin]             = useState('');
+  const [email, setEmail]         = useState('');
+  const [password, setPassword]   = useState('');
+  const [confirm, setConfirm]     = useState('');
+  const [error, setError]         = useState('');
+  const [loading, setLoading]     = useState(false);
+
+  useEffect(() => {
+    api('/api/members')
+      .then(all => setMembers(all.filter(m => !m.has_credentials)))
+      .catch(() => {});
+  }, []);
+
+  function handlePinComplete(enteredPin) {
+    setPin(enteredPin);
+    setStep('credentials');
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (password !== confirm) { setError('Passwords don\'t match'); return; }
+    if (password.length < 8)  { setError('Password must be at least 8 characters'); return; }
+    setLoading(true);
+    setError('');
+    try {
+      const { member, csrf_token } = await api('/api/auth/migrate', {method:'POST', body:{member_id: selected.id, pin, email, password}});
+      if (csrf_token) _csrfToken = csrf_token;
+      onLogin(member);
+    } catch(e) {
+      setError(e.message);
+      // If it's a PIN error, go back to PIN step
+      if (e.message.toLowerCase().includes('pin') || e.message.toLowerCase().includes('credential')) {
+        setPin('');
+        setStep('pin');
+      }
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6">
+      <div className="w-full max-w-sm">
+        <button onClick={step === 'pick' ? onBack : () => { setError(''); setStep(step === 'credentials' ? 'pin' : 'pick'); }}
+          className="text-gray-400 hover:text-white text-sm mb-6">← Back</button>
+        <h2 className="text-2xl font-black mb-2">Migrate your account</h2>
+        <p className="text-gray-500 text-sm mb-6">Link email + password to your existing account</p>
+
+        {step === 'pick' && (
           <>
-            <p className="text-gray-400 text-sm text-center mb-6">Choose a 4-digit PIN</p>
-            <PinPad onComplete={p => { setPin(p); setStep('confirm'); }} />
+            {members.length === 0 ? (
+              <div className="text-center">
+                <p className="text-gray-400 text-sm mb-6">All accounts have been migrated.</p>
+                <button onClick={onBack} className="text-orange-400 hover:text-orange-300 font-semibold text-sm">← Back to login</button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {members.map(m => (
+                  <button key={m.id} onClick={() => { setSelected(m); setError(''); setStep('pin'); }}
+                    className="w-full flex items-center gap-4 bg-gray-800 hover:bg-gray-700 rounded-2xl px-5 py-4 transition-all">
+                    <div className="w-5 h-5 rounded-full flex-shrink-0" style={{background: m.color}} />
+                    <span className="font-bold text-lg">{m.name}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </>
         )}
 
-        {step === 'confirm' && (
-          <>
-            <p className="text-gray-400 text-sm text-center mb-6">Confirm your PIN</p>
+        {step === 'pin' && selected && (
+          <div>
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-4 h-4 rounded-full" style={{background: selected.color}} />
+              <span className="font-bold text-lg">{selected.name}</span>
+            </div>
+            <p className="text-gray-400 text-sm text-center mb-4">Enter your current 4-digit PIN</p>
             {error && <p className="text-red-400 text-sm text-center mb-3">{error}</p>}
-            {loading
-              ? <p className="text-center text-gray-400 pulse">Creating account…</p>
-              : <PinPad onComplete={handleConfirmPin} />
-            }
+            <PinPad key={pin} onComplete={handlePinComplete} />
+          </div>
+        )}
+
+        {step === 'credentials' && (
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <input type="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)}
+              autoComplete="email" required
+              className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+            <input type="password" placeholder="New password (min 8 characters)" value={password} onChange={e => setPassword(e.target.value)}
+              autoComplete="new-password" required
+              className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+            <input type="password" placeholder="Confirm password" value={confirm} onChange={e => setConfirm(e.target.value)}
+              autoComplete="new-password" required
+              className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+            {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+            <button type="submit" disabled={loading}
+              className="w-full py-4 rounded-2xl font-bold text-white text-lg bg-orange-500 hover:bg-orange-400 disabled:opacity-50 transition-all">
+              {loading ? <span className="pulse">Migrating…</span> : 'Set up account'}
+            </button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── forgot password screen ───────────────────────────────────────────────────
+function ForgotPasswordScreen({ onBack }) {
+  const [email, setEmail]   = useState('');
+  const [sent, setSent]     = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      await api('/api/auth/forgot-password', {method:'POST', body:{email}});
+      setSent(true);
+    } catch {}
+    setLoading(false);
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6">
+      <div className="w-full max-w-sm">
+        <button onClick={onBack} className="text-gray-400 hover:text-white text-sm mb-6">← Back to login</button>
+        <h2 className="text-2xl font-black mb-2">Reset password</h2>
+
+        {sent ? (
+          <div className="text-center mt-6">
+            <p className="text-gray-300 text-sm mb-6">
+              If that email is registered, a reset link has been sent.<br />Check your inbox.
+            </p>
+            <button onClick={onBack} className="text-orange-400 hover:text-orange-300 font-semibold text-sm">← Back to login</button>
+          </div>
+        ) : (
+          <>
+            <p className="text-gray-500 text-sm mb-6">We'll send a reset link to your email</p>
+            <form onSubmit={handleSubmit} className="space-y-3">
+              <input type="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)}
+                autoComplete="email" required
+                className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+              <button type="submit" disabled={loading}
+                className="w-full py-4 rounded-2xl font-bold text-white text-lg bg-orange-500 hover:bg-orange-400 disabled:opacity-50 transition-all">
+                {loading ? <span className="pulse">Sending…</span> : 'Send reset link'}
+              </button>
+            </form>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── reset password screen ────────────────────────────────────────────────────
+function ResetPasswordScreen({ token, onLogin, onForgot }) {
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm]   = useState('');
+  const [error, setError]       = useState('');
+  const [loading, setLoading]   = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (password !== confirm) { setError('Passwords don\'t match'); return; }
+    if (password.length < 8)  { setError('Password must be at least 8 characters'); return; }
+    setLoading(true);
+    setError('');
+    try {
+      const { member, csrf_token } = await api('/api/auth/reset-password', {method:'POST', body:{token, new_password: password}});
+      if (csrf_token) _csrfToken = csrf_token;
+      onLogin(member);
+    } catch(e) {
+      setError(e.message);
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-6">
+      <div className="w-full max-w-sm">
+        <h2 className="text-2xl font-black mb-2">Set new password</h2>
+        <p className="text-gray-500 text-sm mb-6">Choose a new password for your account</p>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <input type="password" placeholder="New password (min 8 characters)" value={password} onChange={e => setPassword(e.target.value)}
+            autoComplete="new-password" required
+            className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+          <input type="password" placeholder="Confirm password" value={confirm} onChange={e => setConfirm(e.target.value)}
+            autoComplete="new-password" required
+            className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+          {error && (
+            <div>
+              <p className="text-red-400 text-sm text-center mb-2">{error}</p>
+              {(error.toLowerCase().includes('invalid') || error.toLowerCase().includes('expired')) && (
+                <button type="button" onClick={onForgot}
+                  className="w-full text-orange-400 hover:text-orange-300 text-sm font-semibold text-center">
+                  Request a new reset link
+                </button>
+              )}
+            </div>
+          )}
+          <button type="submit" disabled={loading}
+            className="w-full py-4 rounded-2xl font-bold text-white text-lg bg-orange-500 hover:bg-orange-400 disabled:opacity-50 transition-all">
+            {loading ? <span className="pulse">Updating…</span> : 'Set new password'}
+          </button>
+        </form>
       </div>
     </div>
   );
@@ -2785,11 +2991,21 @@ function MainApp({ currentMember, onLogout }) {
 
 // ─── app root (auth state machine) ───────────────────────────────────────────
 function App() {
-  const [authState, setAuthState] = useState('loading'); // loading|login|signup|pending|main
+  const [authState, setAuthState] = useState('loading'); // loading|login|signup|pending|main|migrate|forgot|reset
   const [currentMember, setCurrentMember] = useState(null);
   const [sessionExpired, setSessionExpired] = useState(false);
+  const [resetToken, setResetToken] = useState(null);
 
   useEffect(() => {
+    // Check for password reset token in URL
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('reset_token');
+    if (token) {
+      setResetToken(token);
+      setAuthState('reset');
+      return;
+    }
+
     _onSessionExpired = () => {
       setCurrentMember(null);
       setSessionExpired(true);
@@ -2833,9 +3049,12 @@ function App() {
       <div className="text-gray-500 pulse text-lg">Loading…</div>
     </div>
   );
-  if (authState === 'login')   return <LoginScreen onLogin={handleLogin} onShowSignup={() => setAuthState('signup')} sessionExpired={sessionExpired} />;
-  if (authState === 'signup')  return <SignupScreen onSignup={handleSignup} onBack={() => setAuthState('login')} />;
-  if (authState === 'pending') return <PendingScreen onLogout={handleLogout} />;
+  if (authState === 'login')    return <LoginScreen onLogin={handleLogin} onShowSignup={() => setAuthState('signup')} onShowMigrate={() => setAuthState('migrate')} onShowForgot={() => setAuthState('forgot')} sessionExpired={sessionExpired} />;
+  if (authState === 'signup')   return <SignupScreen onSignup={handleSignup} onBack={() => setAuthState('login')} />;
+  if (authState === 'migrate')  return <MigrateScreen onLogin={handleLogin} onBack={() => setAuthState('login')} />;
+  if (authState === 'forgot')   return <ForgotPasswordScreen onBack={() => setAuthState('login')} />;
+  if (authState === 'reset')    return <ResetPasswordScreen token={resetToken} onLogin={member => { history.replaceState({}, '', '/'); handleLogin(member); }} onForgot={() => { history.replaceState({}, '', '/'); setAuthState('forgot'); }} />;
+  if (authState === 'pending')  return <PendingScreen onLogout={handleLogout} />;
   return <MainApp currentMember={currentMember} onLogout={handleLogout} />;
 }
 
