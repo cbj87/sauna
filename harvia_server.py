@@ -1021,6 +1021,45 @@ def admin_delete_member(member_id: int):
         db.close()
 
 
+@app.route("/api/admin/members/<int:member_id>/set-credentials", methods=["PUT"])
+def admin_set_credentials(member_id: int):
+    """Admin escape hatch — manually set email + password for a member who cannot self-migrate."""
+    import re
+    db, _, error = require_admin()
+    if error:
+        return error
+    try:
+        body     = request.get_json(silent=True) or {}
+        email    = body.get("email", "").strip().lower()
+        password = body.get("password", "")
+
+        if not email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            return err("A valid email address is required")
+        pw_err = _validate_password(password)
+        if pw_err:
+            return err(pw_err)
+
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not member:
+            return err("Member not found", 404)
+
+        # Check email uniqueness (excluding this member)
+        existing = db.query(FamilyMember).filter(
+            FamilyMember.email == email, FamilyMember.id != member_id
+        ).first()
+        if existing:
+            return err("An account with that email already exists", 409)
+
+        member.email         = email
+        member.password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        member.pin_hash      = None
+        db.commit()
+        db.refresh(member)
+        return jsonify({"ok": True, "member": member.to_dict()})
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Family member routes (public read, auth-gated write)
 # ---------------------------------------------------------------------------
