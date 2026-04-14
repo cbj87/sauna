@@ -349,7 +349,7 @@ def _generate_csrf_token() -> str:
 
 
 # Endpoints that don't require a CSRF token (pre-authentication flows).
-_CSRF_EXEMPT = {"login", "signup", "migrate", "static"}
+_CSRF_EXEMPT = {"login", "signup", "migrate", "forgot_password", "reset_password", "static"}
 
 
 @app.before_request
@@ -764,6 +764,69 @@ def migrate():
         member.email         = email
         member.password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         member.pin_hash      = None
+        db.commit()
+        db.refresh(member)
+
+        session.permanent = True
+        session["member_id"] = member.id
+        return jsonify({"ok": True, "member": member.to_dict(), "csrf_token": _generate_csrf_token()})
+    finally:
+        db.close()
+
+
+@app.route("/api/auth/forgot-password", methods=["POST"])
+def forgot_password():
+    """Initiate a password reset — always returns 200 to avoid revealing whether email exists."""
+    body  = request.get_json(silent=True) or {}
+    email = body.get("email", "").strip().lower()
+
+    db = SessionLocal()
+    try:
+        member = db.query(FamilyMember).filter(FamilyMember.email == email).first()
+        if member:
+            token = secrets.token_urlsafe(32)
+            member.reset_token         = token
+            member.reset_token_expires = app_now() + timedelta(hours=1)
+            db.commit()
+            reset_link = f"{APP_URL}/?reset_token={token}"
+            _send_email(
+                to=email,
+                subject="Reset your Sweat Box password",
+                body_text=(
+                    f"Hi {member.name},\n\n"
+                    f"Click the link below to reset your Sweat Box password. "
+                    f"This link expires in 1 hour.\n\n"
+                    f"{reset_link}\n\n"
+                    f"If you didn't request this, you can safely ignore this email.\n"
+                ),
+            )
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
+@app.route("/api/auth/reset-password", methods=["POST"])
+def reset_password():
+    """Complete a password reset using a token from the reset email."""
+    body         = request.get_json(silent=True) or {}
+    token        = body.get("token", "").strip()
+    new_password = body.get("new_password", "")
+
+    pw_err = _validate_password(new_password)
+    if pw_err:
+        return err(pw_err)
+    if not token:
+        return err("Reset token is required", 400)
+
+    db = SessionLocal()
+    try:
+        member = db.query(FamilyMember).filter(FamilyMember.reset_token == token).first()
+        if not member or not member.reset_token_expires or member.reset_token_expires < app_now():
+            return err("Reset link is invalid or has expired", 400)
+
+        member.password_hash        = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+        member.reset_token          = None
+        member.reset_token_expires  = None
         db.commit()
         db.refresh(member)
 
