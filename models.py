@@ -50,6 +50,10 @@ class FamilyMember(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, nullable=False)
     pin_hash = Column(String, nullable=True)
+    email = Column(String, nullable=True, unique=True)
+    password_hash = Column(String, nullable=True)
+    reset_token = Column(String, nullable=True)
+    reset_token_expires = Column(DateTime, nullable=True)
     # pending | approved | rejected
     status = Column(String, default="pending")
     is_admin = Column(Integer, default=0)
@@ -74,6 +78,7 @@ class FamilyMember(Base):
         return {
             "id": self.id,
             "name": self.name,
+            "email": self.email,
             "status": self.status,
             "is_admin": bool(self.is_admin),
             "default_temp": self.default_temp,
@@ -85,7 +90,7 @@ class FamilyMember(Base):
         }
 
     def to_public_dict(self) -> dict:
-        """Dict safe to return to unauthenticated callers (login screen)."""
+        """Dict safe to return to unauthenticated callers (login screen / migration picker)."""
         return {
             "id": self.id,
             "name": self.name,
@@ -93,6 +98,7 @@ class FamilyMember(Base):
             "default_temp": self.default_temp,
             "default_time": self.default_time,
             "max_temp": self.max_temp,
+            "has_credentials": self.email is not None,
         }
 
 
@@ -201,6 +207,10 @@ def _migrate_db():
         "ALTER TABLE bookings ADD COLUMN preheat_notified_at DATETIME",
         "ALTER TABLE family_members ADD COLUMN notification_prefs TEXT",
         "ALTER TABLE bookings ADD COLUMN session_ending_notified_at DATETIME",
+        "ALTER TABLE family_members ADD COLUMN email TEXT",
+        "ALTER TABLE family_members ADD COLUMN password_hash TEXT",
+        "ALTER TABLE family_members ADD COLUMN reset_token TEXT",
+        "ALTER TABLE family_members ADD COLUMN reset_token_expires DATETIME",
     ]
     with engine.connect() as conn:
         for stmt in migrations:
@@ -209,6 +219,14 @@ def _migrate_db():
                 conn.commit()
             except Exception:
                 pass  # Column/change already applied — safe to ignore
+        # Partial unique index — enforces uniqueness only on non-NULL emails (SQLite compatible)
+        try:
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_fm_email ON family_members (email) WHERE email IS NOT NULL"
+            ))
+            conn.commit()
+        except Exception:
+            pass
 
 
 def init_db():
