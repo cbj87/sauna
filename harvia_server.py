@@ -160,6 +160,7 @@ def _send_email(to: str, subject: str, body_text: str) -> None:
         headers={
             "Authorization": f"Bearer {RESEND_API_KEY}",
             "Content-Type": "application/json",
+            "User-Agent": "SweatBox/1.0",
         },
         method="POST",
     )
