@@ -11,7 +11,7 @@
 |-------|-----------|
 | Backend | Flask 3.0+, Python |
 | Database | SQLite (WAL mode), SQLAlchemy 2.0+ |
-| Auth | 4-digit PIN, bcrypt, Flask sessions, CSRF tokens |
+| Auth | Email/password, bcrypt, Flask sessions, CSRF tokens |
 | Frontend | React 18 (CDN), Tailwind CSS (CDN), inline Babel |
 | Push | VAPID Web Push (pywebpush) |
 | Scheduling | APScheduler (60s jobs) |
@@ -169,3 +169,12 @@ with open('/tmp/sweatbox_backup.db','rb') as f:
 - Railway volume at `/data`; set `DB_PATH=/data/sweatbox.db`
 - First deploy: POST /api/auth/signup to create admin account
 - Health check: `GET /health` → `{ok: true}`
+- Domain: **cbj87.dev** (registered on Cloudflare, DNS managed there)
+  - Prod app: `cbj-sauna.up.railway.app` → custom domain TBD (e.g. `app.cbj87.dev`)
+  - Email sender: `noreply@cbj87.dev` via Resend (domain verified in Resend dashboard)
+
+## Email (Resend)
+- Provider: Resend (resend.com) — HTTP API over HTTPS, no SMTP
+- Env vars: `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`
+- Domain `cbj87.dev` verified with Resend → sends from `noreply@cbj87.dev` to any address
+- Used for: password reset emails only

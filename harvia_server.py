@@ -11,6 +11,8 @@ import os
 import secrets
 import threading
 import time as _time
+import urllib.error
+import urllib.request
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -25,6 +27,7 @@ from harvia_client import HarviaClient
 from models import DB_PATH, Booking, ControlLog, FamilyMember, Preset, PushSubscription, SessionLocal, init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -56,6 +59,10 @@ VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_CLAIMS_EMAIL = os.environ.get("VAPID_CLAIMS_EMAIL", "sweatbox@localhost")
 
 APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Australia/Sydney")
+
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+EMAIL_FROM     = os.environ.get("EMAIL_FROM", "onboarding@resend.dev")
+APP_URL        = os.environ.get("APP_URL", "http://localhost:5000")
 
 def app_now() -> datetime:
     """Current local time as a naive datetime in the configured APP_TIMEZONE."""
@@ -135,6 +142,44 @@ def _log_sauna_action(
             db.commit()
     except Exception as exc:
         logger.error("Failed to write control log: %s", exc)
+
+
+def _send_email(to: str, subject: str, body_text: str) -> None:
+    """Send a plain-text email via Resend HTTP API. No-ops silently if not configured."""
+    if not RESEND_API_KEY:
+        logger.warning("Email not configured (RESEND_API_KEY missing) — skipping send to %s", to)
+        return
+    payload = json.dumps({
+        "from": EMAIL_FROM,
+        "to": [to],
+        "subject": subject,
+        "text": body_text,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+            "User-Agent": "SweatBox/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            logger.info("Email sent to %s: %s (status %d)", to, subject, resp.status)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        logger.error("Failed to send email to %s: HTTP %d — %s", to, exc.code, body)
+    except Exception as exc:
+        logger.error("Failed to send email to %s: %s", to, exc)
+
+
+def _validate_password(pw: str) -> str | None:
+    """Returns an error string if the password is invalid, or None if it's acceptable."""
+    if not pw or len(pw) < 8:
+        return "Password must be at least 8 characters"
+    return None
 
 
 def _send_push(sub_info: dict, payload: dict):
@@ -313,7 +358,7 @@ def _generate_csrf_token() -> str:
 
 
 # Endpoints that don't require a CSRF token (pre-authentication flows).
-_CSRF_EXEMPT = {"login", "signup", "static"}
+_CSRF_EXEMPT = {"login", "signup", "migrate", "forgot_password", "reset_password", "static"}
 
 
 @app.before_request
@@ -593,26 +638,36 @@ scheduler.add_job(refresh_harvia_token,    "interval", minutes=30,  id="token_re
 
 @app.route("/api/auth/signup", methods=["POST"])
 def signup():
+    import re
     body = request.get_json(silent=True) or {}
-    name = body.get("name", "").strip()
-    pin = str(body.get("pin", "")).strip()
-    color = body.get("color", "#F97316")
+    name     = body.get("name", "").strip()
+    email    = body.get("email", "").strip().lower()
+    password = body.get("password", "")
+    color    = body.get("color", "#F97316")
 
     if not name:
         return err("Name is required")
-    if not pin or len(pin) != 4 or not pin.isdigit():
-        return err("PIN must be exactly 4 digits")
+    if not email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return err("A valid email address is required")
+    pw_err = _validate_password(password)
+    if pw_err:
+        return err(pw_err)
 
     db = SessionLocal()
     try:
+        # Check email uniqueness
+        if db.query(FamilyMember).filter(FamilyMember.email == email).first():
+            return err("An account with that email already exists", 409)
+
         # First-ever signup is auto-approved as admin
         existing_count = db.query(FamilyMember).count()
         is_first = existing_count == 0
 
-        pin_hash = bcrypt.hashpw(pin.encode(), bcrypt.gensalt()).decode()
+        password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         member = FamilyMember(
             name=name,
-            pin_hash=pin_hash,
+            email=email,
+            password_hash=password_hash,
             status="approved" if is_first else "pending",
             is_admin=1 if is_first else 0,
             color=color,
@@ -621,14 +676,13 @@ def signup():
         db.commit()
         db.refresh(member)
 
-        if is_first:
-            session.permanent = True
-            session["member_id"] = member.id
-            return jsonify({"ok": True, "status": "approved", "member": member.to_dict(), "csrf_token": _generate_csrf_token()}), 201
-
         session.permanent = True
         session["member_id"] = member.id
         csrf = _generate_csrf_token()
+
+        if is_first:
+            return jsonify({"ok": True, "status": "approved", "member": member.to_dict(), "csrf_token": csrf}), 201
+
         _notify_admins_push({
             "title": "👤 New signup",
             "body": f"{name} wants to join — approve them in the Admin tab.",
@@ -648,35 +702,144 @@ def login():
         return err("Too many failed attempts — please wait 15 minutes before trying again.", 429)
 
     body = request.get_json(silent=True) or {}
-    member_id = body.get("member_id")
-    pin = str(body.get("pin", "")).strip()
+    email    = body.get("email", "").strip().lower()
+    password = body.get("password", "")
 
-    if not member_id or not pin:
-        return err("member_id and pin are required")
-
-    try:
-        member_id = int(member_id)
-    except (ValueError, TypeError):
-        return err("Invalid member_id", 400)
+    if not email or not password:
+        return err("Email and password are required")
 
     db = SessionLocal()
     try:
-        member = db.query(FamilyMember).filter_by(id=member_id).first()
-        if not member or not member.pin_hash:
+        member = db.query(FamilyMember).filter(FamilyMember.email == email).first()
+        if not member or not member.password_hash:
             _record_failed_attempt(ip)
-            return err("Invalid credentials", 401)
+            return err("Invalid email or password", 401)
         if member.status == "pending":
             return err("Your account is waiting for approval", 403)
         if member.status == "rejected":
             return err("Your account request was not approved", 403)
-        if not bcrypt.checkpw(pin.encode(), member.pin_hash.encode()):
+        if not bcrypt.checkpw(password.encode(), member.password_hash.encode()):
             remaining = _record_failed_attempt(ip)
-            msg = "Invalid PIN"
+            msg = "Invalid email or password"
             if remaining <= 3:
                 msg += f" — {remaining} attempt{'s' if remaining != 1 else ''} remaining before lockout"
             return err(msg, 401)
 
         _clear_attempts(ip)
+        session.permanent = True
+        session["member_id"] = member.id
+        return jsonify({"ok": True, "member": member.to_dict(), "csrf_token": _generate_csrf_token()})
+    finally:
+        db.close()
+
+
+@app.route("/api/auth/migrate", methods=["POST"])
+def migrate():
+    """Let an existing PIN-only user link email/password to their account."""
+    import re
+    body      = request.get_json(silent=True) or {}
+    member_id = body.get("member_id")
+    pin       = str(body.get("pin", "")).strip()
+    email     = body.get("email", "").strip().lower()
+    password  = body.get("password", "")
+
+    if not member_id or not pin:
+        return err("member_id and pin are required")
+    try:
+        member_id = int(member_id)
+    except (ValueError, TypeError):
+        return err("Invalid member_id", 400)
+
+    if not email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        return err("A valid email address is required")
+    pw_err = _validate_password(password)
+    if pw_err:
+        return err(pw_err)
+
+    db = SessionLocal()
+    try:
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not member or not member.pin_hash:
+            return err("Invalid credentials", 401)
+        if member.email is not None:
+            return err("Account already migrated — please log in with your email", 409)
+        if not bcrypt.checkpw(pin.encode(), member.pin_hash.encode()):
+            return err("Incorrect PIN", 401)
+
+        # Check email uniqueness
+        if db.query(FamilyMember).filter(FamilyMember.email == email).first():
+            return err("An account with that email already exists", 409)
+
+        member.email         = email
+        member.password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        member.pin_hash      = None
+        db.commit()
+        db.refresh(member)
+
+        session.permanent = True
+        session["member_id"] = member.id
+        return jsonify({"ok": True, "member": member.to_dict(), "csrf_token": _generate_csrf_token()})
+    finally:
+        db.close()
+
+
+@app.route("/api/auth/forgot-password", methods=["POST"])
+def forgot_password():
+    """Initiate a password reset — always returns 200 to avoid revealing whether email exists."""
+    body  = request.get_json(silent=True) or {}
+    email = body.get("email", "").strip().lower()
+
+    db = SessionLocal()
+    try:
+        member = db.query(FamilyMember).filter(FamilyMember.email == email).first()
+        if member:
+            token = secrets.token_urlsafe(32)
+            member.reset_token         = token
+            member.reset_token_expires = app_now() + timedelta(hours=1)
+            db.commit()
+            reset_link = f"{APP_URL}/?reset_token={token}"
+            # Send in background so slow/failing SMTP doesn't block the response
+            threading.Thread(
+                target=_send_email,
+                args=(email, "Reset your Sweat Box password",
+                    f"Hi {member.name},\n\n"
+                    f"Click the link below to reset your Sweat Box password. "
+                    f"This link expires in 1 hour.\n\n"
+                    f"{reset_link}\n\n"
+                    f"If you didn't request this, you can safely ignore this email.\n"
+                ),
+                daemon=True,
+            ).start()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
+@app.route("/api/auth/reset-password", methods=["POST"])
+def reset_password():
+    """Complete a password reset using a token from the reset email."""
+    body         = request.get_json(silent=True) or {}
+    token        = body.get("token", "").strip()
+    new_password = body.get("new_password", "")
+
+    pw_err = _validate_password(new_password)
+    if pw_err:
+        return err(pw_err)
+    if not token:
+        return err("Reset token is required", 400)
+
+    db = SessionLocal()
+    try:
+        member = db.query(FamilyMember).filter(FamilyMember.reset_token == token).first()
+        if not member or not member.reset_token_expires or member.reset_token_expires < app_now():
+            return err("Reset link is invalid or has expired", 400)
+
+        member.password_hash        = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
+        member.reset_token          = None
+        member.reset_token_expires  = None
+        db.commit()
+        db.refresh(member)
+
         session.permanent = True
         session["member_id"] = member.id
         return jsonify({"ok": True, "member": member.to_dict(), "csrf_token": _generate_csrf_token()})
@@ -868,6 +1031,45 @@ def admin_delete_member(member_id: int):
         db.close()
 
 
+@app.route("/api/admin/members/<int:member_id>/set-credentials", methods=["PUT"])
+def admin_set_credentials(member_id: int):
+    """Admin escape hatch — manually set email + password for a member who cannot self-migrate."""
+    import re
+    db, _, error = require_admin()
+    if error:
+        return error
+    try:
+        body     = request.get_json(silent=True) or {}
+        email    = body.get("email", "").strip().lower()
+        password = body.get("password", "")
+
+        if not email or not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            return err("A valid email address is required")
+        pw_err = _validate_password(password)
+        if pw_err:
+            return err(pw_err)
+
+        member = db.query(FamilyMember).filter_by(id=member_id).first()
+        if not member:
+            return err("Member not found", 404)
+
+        # Check email uniqueness (excluding this member)
+        existing = db.query(FamilyMember).filter(
+            FamilyMember.email == email, FamilyMember.id != member_id
+        ).first()
+        if existing:
+            return err("An account with that email already exists", 409)
+
+        member.email         = email
+        member.password_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        member.pin_hash      = None
+        db.commit()
+        db.refresh(member)
+        return jsonify({"ok": True, "member": member.to_dict()})
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Family member routes (public read, auth-gated write)
 # ---------------------------------------------------------------------------
@@ -914,28 +1116,28 @@ def update_own_member(member_id: int):
         db.close()
 
 
-@app.route("/api/members/<int:member_id>/change-pin", methods=["POST"])
-def change_pin(member_id: int):
-    """Authenticated users can change their own PIN; admins can change any member's PIN."""
+@app.route("/api/members/<int:member_id>/change-password", methods=["POST"])
+def change_password(member_id: int):
+    """Authenticated users can change their own password."""
     db, member, error = require_auth()
     if error:
         return error
     body = request.get_json(silent=True) or {}
-    current_pin = str(body.get("current_pin", "")).strip()
-    new_pin = str(body.get("new_pin", "")).strip()
-    if not current_pin or not new_pin:
-        return err("current_pin and new_pin are required")
-    if len(new_pin) != 4 or not new_pin.isdigit():
-        return err("New PIN must be exactly 4 digits")
+    current_password = body.get("current_password", "")
+    new_password     = body.get("new_password", "")
+    if not current_password or not new_password:
+        return err("current_password and new_password are required")
+    pw_err = _validate_password(new_password)
+    if pw_err:
+        return err(pw_err)
     try:
-        if member.id != member_id and not member.is_admin:
-            return err("Cannot change another member's PIN", 403)
-        target = db.query(FamilyMember).filter_by(id=member_id).first()
-        if not target:
-            return err("Member not found", 404)
-        if not bcrypt.checkpw(current_pin.encode(), target.pin_hash.encode()):
-            return err("Current PIN is incorrect", 401)
-        target.pin_hash = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
+        if member.id != member_id:
+            return err("Cannot change another member's password", 403)
+        if not member.password_hash:
+            return err("No password set — use the migration flow to create one", 400)
+        if not bcrypt.checkpw(current_password.encode(), member.password_hash.encode()):
+            return err("Current password is incorrect", 401)
+        member.password_hash = bcrypt.hashpw(new_password.encode(), bcrypt.gensalt()).decode()
         db.commit()
         return jsonify({"ok": True})
     finally:
