@@ -24,7 +24,7 @@
 
 | File | Purpose |
 |------|---------|
-| `harvia_server.py` | Main Flask server — all 39 API routes |
+| `harvia_server.py` | Main Flask server — all API routes |
 | `harvia_client.py` | Harvia cloud API client (Cognito auth, GraphQL) |
 | `models.py` | SQLAlchemy models: FamilyMember, Booking, Preset, PushSubscription, ControlLog |
 | `static/index.html` | Entire React frontend (2,400+ lines, all inline) |
@@ -61,6 +61,9 @@ VAPID_PUBLIC_KEY=<base64>
 VAPID_CLAIMS_EMAIL=<email>
 DB_PATH=/data/sweatbox.db              # Railway volume path; defaults to ./sweatbox.db
 PORT=5000
+RESEND_API_KEY=<resend-api-key>        # Required for password reset emails
+EMAIL_FROM=noreply@sweatbox.cbj87.dev  # Sender address (domain must be verified in Resend)
+APP_URL=https://sweatbox.cbj87.dev     # Used in password reset link emails
 ```
 
 ---
@@ -74,14 +77,20 @@ PORT=5000
 - DB sessions: `SessionLocal()` per request, always close in `finally`
 - Thread safety: `_booking_lock` (booking creation), `_login_lock` (rate limiting), `_stats_lock` (Harvia stats)
 - DB migrations: `_migrate_db()` runs safe `ALTER TABLE` statements on startup
+- Email: `_send_email(to, subject, body)` uses Resend HTTP API (stdlib `urllib` only, no SMTP); fires in background thread so it never blocks responses
+- Password validation: `_validate_password(pw)` — min 8 chars
+- CSRF exempt endpoints: `login`, `signup`, `migrate`, `forgot_password`, `reset_password`, `static`
 
 ### Frontend
 - Single `index.html` — all React components inline, no build process
 - `api(path, options)` wrapper handles fetch, CSRF, timeouts (10s), 401 session expiry
+- 401 only triggers session expiry if `_csrfToken` is set (i.e. user is logged in) — avoids false expiry on login failures
 - Temperature: always stored in °C; frontend has °C/°F toggle for display only
 - Dates: stored as YYYY-MM-DD strings; times as HH:MM strings
 - Toast notifications: `showToast(msg, type)` — stacked, auto-dismiss after 3.5s
 - `localDate()` — gets today's date in user's local timezone
+- Auth states: `loading | login | signup | pending | main | migrate | forgot | reset`
+- Password reset: `?reset_token=` URL param on load → goes directly to `reset` state; token cleared from URL after use via `history.replaceState`
 
 ### Database
 - Temperature always in °C
@@ -106,9 +115,9 @@ PORT=5000
 
 | Group | Routes |
 |-------|--------|
-| Auth | POST /api/auth/signup, /login, /logout; GET /api/auth/me |
-| Admin members | GET/POST /api/admin/members; POST approve/reject; PUT/DELETE /api/admin/members/<id> |
-| Members | GET /api/members; PUT /api/members/<id> |
+| Auth | POST /api/auth/signup, /login, /logout, /migrate, /forgot-password, /reset-password; GET /api/auth/me |
+| Admin members | GET/POST /api/admin/members; POST approve/reject; PUT/DELETE /api/admin/members/<id>; PUT /api/admin/members/<id>/set-credentials |
+| Members | GET /api/members; PUT /api/members/<id>; POST /api/members/<id>/change-password |
 | Sauna | GET /api/sauna/status; POST /on, /off, /extend, /set, /preset/<name> |
 | Presets | GET /api/presets; PUT/DELETE /api/admin/presets/<name> |
 | Bookings | GET/POST /api/bookings; PUT/DELETE /api/bookings/<id>; POST /preheat |
@@ -170,11 +179,13 @@ with open('/tmp/sweatbox_backup.db','rb') as f:
 - First deploy: POST /api/auth/signup to create admin account
 - Health check: `GET /health` → `{ok: true}`
 - Domain: **cbj87.dev** (registered on Cloudflare, DNS managed there)
-  - Prod app: `cbj-sauna.up.railway.app` → custom domain TBD (e.g. `app.cbj87.dev`)
-  - Email sender: `noreply@cbj87.dev` via Resend (domain verified in Resend dashboard)
+  - Prod app: `sweatbox.cbj87.dev` → CNAME to `h5sk79kr.up.railway.app` (proxied via Cloudflare)
+  - Test app: `sweatbox-test.cbj87.dev`
+  - Email sender: `noreply@sweatbox.cbj87.dev` via Resend (root domain `cbj87.dev` verified in Resend)
 
 ## Email (Resend)
-- Provider: Resend (resend.com) — HTTP API over HTTPS, no SMTP
+- Provider: Resend (resend.com) — HTTP API over HTTPS, no SMTP (Railway blocks outbound SMTP port 587)
 - Env vars: `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`
-- Domain `cbj87.dev` verified with Resend → sends from `noreply@cbj87.dev` to any address
+- Domain `cbj87.dev` verified with Resend → sends from any `@cbj87.dev` or subdomain to any address
 - Used for: password reset emails only
+- Email fires in a background thread — never blocks the HTTP response
