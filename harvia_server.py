@@ -9,11 +9,10 @@ import json
 import logging
 import os
 import secrets
-import smtplib
 import threading
 import time as _time
+import urllib.request
 from datetime import date, datetime, time, timedelta
-from email.mime.text import MIMEText
 from zoneinfo import ZoneInfo
 
 import bcrypt
@@ -59,12 +58,9 @@ VAPID_CLAIMS_EMAIL = os.environ.get("VAPID_CLAIMS_EMAIL", "sweatbox@localhost")
 
 APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Australia/Sydney")
 
-SMTP_HOST     = os.environ.get("SMTP_HOST", "")
-SMTP_PORT     = int(os.environ.get("SMTP_PORT", "587"))
-SMTP_USER     = os.environ.get("SMTP_USER", "")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
-SMTP_FROM     = os.environ.get("SMTP_FROM", "")
-APP_URL       = os.environ.get("APP_URL", "http://localhost:5000")
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+EMAIL_FROM     = os.environ.get("EMAIL_FROM", "onboarding@resend.dev")
+APP_URL        = os.environ.get("APP_URL", "http://localhost:5000")
 
 def app_now() -> datetime:
     """Current local time as a naive datetime in the configured APP_TIMEZONE."""
@@ -147,21 +143,28 @@ def _log_sauna_action(
 
 
 def _send_email(to: str, subject: str, body_text: str) -> None:
-    """Send a plain-text email via SMTP. No-ops silently if SMTP is not configured."""
-    if not SMTP_HOST or not SMTP_USER:
-        logger.warning("Email not configured — skipping send to %s", to)
+    """Send a plain-text email via Resend HTTP API. No-ops silently if not configured."""
+    if not RESEND_API_KEY:
+        logger.warning("Email not configured (RESEND_API_KEY missing) — skipping send to %s", to)
         return
-    msg = MIMEText(body_text)
-    msg["Subject"] = subject
-    msg["From"]    = SMTP_FROM or SMTP_USER
-    msg["To"]      = to
+    payload = json.dumps({
+        "from": EMAIL_FROM,
+        "to": [to],
+        "subject": subject,
+        "text": body_text,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
-            s.ehlo()
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASSWORD)
-            s.send_message(msg)
-        logger.info("Email sent to %s: %s", to, subject)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            logger.info("Email sent to %s: %s (status %d)", to, subject, resp.status)
     except Exception as exc:
         logger.error("Failed to send email to %s: %s", to, exc)
 
