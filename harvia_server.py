@@ -27,6 +27,7 @@ from harvia_client import HarviaClient
 from models import DB_PATH, Booking, ControlLog, FamilyMember, Preset, PushSubscription, SessionLocal, init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
