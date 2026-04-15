@@ -92,7 +92,7 @@ async function api(path, opts = {}) {
       body: opts.body ? JSON.stringify(opts.body) : undefined,
       signal: controller.signal,
     });
-    if (res.status === 401 && _onSessionExpired) { _onSessionExpired(); throw new Error('Session expired'); }
+    if (res.status === 401 && _onSessionExpired && _csrfToken) { _onSessionExpired(); throw new Error('Session expired'); }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
