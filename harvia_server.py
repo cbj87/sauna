@@ -11,6 +11,7 @@ import os
 import secrets
 import threading
 import time as _time
+import urllib.error
 import urllib.request
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -165,6 +166,9 @@ def _send_email(to: str, subject: str, body_text: str) -> None:
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             logger.info("Email sent to %s: %s (status %d)", to, subject, resp.status)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        logger.error("Failed to send email to %s: HTTP %d — %s", to, exc.code, body)
     except Exception as exc:
         logger.error("Failed to send email to %s: %s", to, exc)
 
