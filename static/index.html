@@ -1503,17 +1503,21 @@ function MigrateScreen({ onLogin, onBack }) {
 
 // ─── forgot password screen ───────────────────────────────────────────────────
 function ForgotPasswordScreen({ onBack }) {
-  const [email, setEmail]   = useState('');
-  const [sent, setSent]     = useState(false);
+  const [email, setEmail]     = useState('');
+  const [sent, setSent]       = useState(false);
   const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState('');
 
   async function handleSubmit(e) {
     e.preventDefault();
     setLoading(true);
+    setError('');
     try {
       await api('/api/auth/forgot-password', {method:'POST', body:{email}});
       setSent(true);
-    } catch {}
+    } catch(e) {
+      setError(e.message || 'Something went wrong — please try again');
+    }
     setLoading(false);
   }
 
@@ -1537,6 +1541,7 @@ function ForgotPasswordScreen({ onBack }) {
               <input type="email" placeholder="Email address" value={email} onChange={e => setEmail(e.target.value)}
                 autoComplete="email" required
                 className="w-full bg-gray-800 rounded-2xl px-5 py-4 text-white text-lg font-semibold outline-none focus:ring-2 focus:ring-orange-500" />
+              {error && <p className="text-red-400 text-sm text-center">{error}</p>}
               <button type="submit" disabled={loading}
                 className="w-full py-4 rounded-2xl font-bold text-white text-lg bg-orange-500 hover:bg-orange-400 disabled:opacity-50 transition-all">
                 {loading ? <span className="pulse">Sending…</span> : 'Send reset link'}

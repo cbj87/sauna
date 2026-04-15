@@ -789,17 +789,18 @@ def forgot_password():
             member.reset_token_expires = app_now() + timedelta(hours=1)
             db.commit()
             reset_link = f"{APP_URL}/?reset_token={token}"
-            _send_email(
-                to=email,
-                subject="Reset your Sweat Box password",
-                body_text=(
+            # Send in background so slow/failing SMTP doesn't block the response
+            threading.Thread(
+                target=_send_email,
+                args=(email, "Reset your Sweat Box password",
                     f"Hi {member.name},\n\n"
                     f"Click the link below to reset your Sweat Box password. "
                     f"This link expires in 1 hour.\n\n"
                     f"{reset_link}\n\n"
                     f"If you didn't request this, you can safely ignore this email.\n"
                 ),
-            )
+                daemon=True,
+            ).start()
         return jsonify({"ok": True})
     finally:
         db.close()
