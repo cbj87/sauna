@@ -1194,7 +1194,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
             <span className="font-bold text-orange-400">{Math.min(tempF, myMaxTempF)}°F <span className="text-gray-500 font-normal">({fToC(Math.min(tempF, myMaxTempF))}°C)</span></span>
           </div>
           <input type="range" min={104} max={myMaxTempF} step={2} value={Math.min(tempF, myMaxTempF)}
-            onChange={e=>{ setManuallySet(true); setTempF(Number(e.target.value)); }} className="w-full h-3" />
+            onChange={e=>{ setManuallySet(true); setTempF(Number(e.target.value)); }} className="w-full h-3 touch-none" />
           <div className="flex justify-between text-xs text-gray-600 mt-1"><span>104°F</span><span>{myMaxTempF}°F</span></div>
         </div>
       )}

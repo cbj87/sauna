@@ -88,3 +88,39 @@
 
 - [ ] **Error boundary** — wrap the React app in an error boundary so a JS crash shows a friendly message instead of a blank screen
 - [ ] **Logging / Sentry** — add structured error logging or a Sentry integration so production crashes are visible
+
+---
+
+## 🔍 Review — Identified April 2026
+
+### Bugs / Correctness
+
+- [ ] **"Change own PIN" endpoint missing** — marked complete in todo but the `change-password` endpoint only handles passwords; users with PIN-only accounts have no way to change their PIN
+- [ ] **Cancellation sends no notification** — when a booking is cancelled (by admin or owner), the booking owner receives no push notification
+- [ ] **Notification prefs not respected for approval notifications** — the "booking approved" push always fires regardless of the member's `notification_prefs` setting
+- [ ] **Admin pending-count polls every 5 min regardless of tab visibility** — should pause polling when the Admin tab is not active
+
+### UX / Polish
+
+- [ ] **"Sauna ready" push notification** — fire when current temperature reaches the target temp during preheat, rather than only a fixed-time reminder before session start
+- [ ] **Deep links in notifications** — preheat and session-ending notifications should link directly to `/?tab=controls`; currently the `url` field is just `/`
+- [ ] **Friendly Harvia error messages** — device offline and other Harvia API errors surface raw exception strings to the user; map common failures to readable messages
+- [ ] **Dismissible toasts** — 3.5s auto-dismiss is too short for error messages; allow tap-to-dismiss so users can read before it disappears
+- [ ] **Preheat progress on Controls tab** — show a "Ready in ~X min" estimate based on current vs target temp delta rather than just the raw temperature reading
+- [ ] **Current time marker on schedule** — a "now" line on the daily timeline so users can immediately see what's upcoming vs past
+- [ ] **Booking cards show target temp** — schedule and history cards don't display the booked temperature
+
+### Features
+
+- [ ] **Re-authenticate for destructive admin actions** — deleting a member or revoking admin privileges requires no confirmation or PIN; easy accidental action
+- [ ] **Notification when admin cancels a booking** — specifically for the case where someone else's booking is cancelled by an admin
+- [ ] **Configurable session-ending alert window** — preheat reminder time is configurable; session-ending alert is hardcoded at 15 min with no way to adjust
+- [ ] **Member switcher in booking modal (admin)** — admins can create bookings for other members via the API but not through the UI booking modal
+- [ ] **Recurring bookings** — weekly repeat option (e.g. "every Friday 18:00–20:00") — already listed above but confirmed unimplemented
+
+### Reliability / Performance
+
+- [ ] **React error boundary** — already listed above but confirmed not yet implemented; a JS crash shows a blank screen with no recovery path
+- [ ] **Self-host CDN assets** — React, Tailwind, and Babel are loaded from unpkg/CDN; downtime breaks the app entirely; vendor into `/static`
+- [ ] **Smarter sauna status polling** — 30s fixed interval regardless of session state; could back off when no active session to reduce Railway egress costs
+- [ ] **VAPID re-subscribe prompt** — stale push subscriptions are silently deleted on 410/404 errors but the user is never told their notifications have broken
