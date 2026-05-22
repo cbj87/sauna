@@ -1159,11 +1159,59 @@ def sauna_status():
         return err(str(exc), 502)
 
 
-def _auto_create_booking(member_id: int, member_name: str, target_c: int, on_time_mins: int) -> None:
-    """Create a tracking booking when the sauna is turned on ad-hoc (no prior booking).
+def _complete_running_bookings() -> None:
+    """Mark today's running tracking bookings completed when the sauna is turned off.
 
-    Best-effort — never raises.  Skipped if the member already has an active
-    booking today so we don't double-up on real scheduled sessions.
+    The physical sauna serves one session at a time, so turning it off ends the
+    current session.  Completing the booking removes it from the auto-shutoff and
+    session-ending scheduler queries (both filter on status), preventing stray
+    '15 minutes left' alerts and stale auto-shutoffs.  Best-effort — never raises.
+    """
+    try:
+        now = app_now()
+        today = now.date()
+        current_time = now.time()
+        yesterday = today - timedelta(days=1)
+
+        db = SessionLocal()
+        try:
+            running = (
+                db.query(Booking)
+                .filter(
+                    Booking.date == today,
+                    Booking.status.in_(["active", "preheating"]),
+                )
+                .all()
+            )
+            # Midnight-spanning sessions started yesterday, still running now.
+            running += (
+                db.query(Booking)
+                .filter(
+                    Booking.date == yesterday,
+                    Booking.end_time < Booking.start_time,
+                    Booking.end_time > current_time,
+                    Booking.status.in_(["active", "preheating"]),
+                )
+                .all()
+            )
+            for b in running:
+                b.status = "completed"
+                logger.info("Completed booking #%d — sauna turned off", b.id)
+            if running:
+                db.commit()
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.warning("Completing running bookings failed (non-fatal): %s", exc)
+
+
+def _auto_create_booking(member_id: int, member_name: str, target_c: int, on_time_mins: int) -> None:
+    """Create a tracking booking when the sauna is turned on.
+
+    Best-effort — never raises.  Turning the sauna on starts a new physical
+    session, so any booking the member already has running today is completed
+    first and a fresh tracking booking is created with the new end time.  This
+    keeps the auto-shutoff / session-ending scheduler aligned with the device.
     """
     try:
         now = app_now()
@@ -1174,21 +1222,21 @@ def _auto_create_booking(member_id: int, member_name: str, target_c: int, on_tim
 
         db = SessionLocal()
         try:
-            existing = (
+            prior = (
                 db.query(Booking)
                 .filter(
                     Booking.member_id == member_id,
                     Booking.date == today,
                     Booking.status.in_(["scheduled", "preheating", "active"]),
                 )
-                .first()
+                .all()
             )
-            if existing:
-                logger.debug(
-                    "Auto-booking skipped — %s already has booking #%d today",
-                    member_name, existing.id,
+            for b in prior:
+                b.status = "completed"
+                logger.info(
+                    "Completed prior booking #%d for %s — new session starting",
+                    b.id, member_name,
                 )
-                return
 
             booking = Booking(
                 member_id=member_id,
@@ -1231,7 +1279,11 @@ def sauna_on():
             return err(
                 f"Temperature exceeds your limit of {c_to_f(member.max_temp)}°F ({member.max_temp}°C)", 400
             )
-        on_time = int(body.get("onTime", 60))
+        if "onTime" in body and body["onTime"] is not None:
+            on_time = int(body["onTime"])
+        else:
+            logger.warning("sauna/on missing onTime — defaulting to 60 min (body: %s)", body)
+            on_time = 60
         mid, mname = member.id, member.name
     finally:
         db.close()
@@ -1264,6 +1316,7 @@ def sauna_off():
         db.close()
     try:
         get_harvia().turn_off()
+        _complete_running_bookings()
         _log_sauna_action(mid, mname, "off")
         _notify_admins_push({
             "title": "❄️ Sauna turned off",

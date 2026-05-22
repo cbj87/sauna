@@ -970,7 +970,7 @@ function MembersPanel({ members, onReload, currentMember }) {
 }
 
 // ─── controls ────────────────────────────────────────────────────────────────
-function Controls({ status, statusUpdatedAt, bookings, members, presets = [], currentMember, onRefresh, onBook, toast }) {
+function Controls({ status, statusUpdatedAt, bookings, members, presets = [], currentMember, onRefresh, onBook, toast, tempF, setTempF, duration, setDuration, manuallySet, setManuallySet }) {
   const now = new Date();
   const todayStr = localDate(now);
 
@@ -1000,13 +1000,12 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
   const seedTemp = relevantBookings[0]?.target_temp ?? myProfile?.default_temp ?? currentMember?.default_temp ?? 90;
   const seedDur  = relevantBookings[0]?.on_time    ?? myProfile?.default_time  ?? currentMember?.default_time  ?? 60;
 
-  const [tempF, setTempF] = useState(Math.min(cToF(seedTemp), myMaxTempF));
-  const [duration, setDuration] = useState(seedDur);
+  // tempF, duration, manuallySet are owned by MainApp (props) so a user's choice
+  // persists across Controls unmounting on tab switches.
 
   // Re-sync sliders when bookings or member profile loads/changes,
   // but only if the user hasn't manually adjusted the sliders.
   // Priority: booking values > profile defaults.
-  const [manuallySet, setManuallySet] = useState(false);
   useEffect(() => {
     if (manuallySet) return;
     if (relevantBookings.length > 0) {
@@ -2418,6 +2417,11 @@ function MainApp({ currentMember, onLogout }) {
   const [bookDefaultDate, setBookDefaultDate] = useState(null);
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [tab, setTab] = useState('today'); // today | controls | members | admin
+  // Controls form state lives here (not in Controls) so a user-chosen temp/duration
+  // survives the Controls component unmounting on tab switches.
+  const [ctrlTempF, setCtrlTempF] = useState(cToF(currentMember?.default_temp ?? 90));
+  const [ctrlDuration, setCtrlDuration] = useState(currentMember?.default_time ?? 60);
+  const [ctrlManuallySet, setCtrlManuallySet] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
   const [bookingWindowDays, setBookingWindowDays] = useState(30);
   const { toasts, push: toast } = useToast();
@@ -2914,7 +2918,8 @@ function MainApp({ currentMember, onLogout }) {
         )}
 
         {tab === 'controls' && (
-          <Controls status={status} statusUpdatedAt={statusUpdatedAt} bookings={bookings} members={members} presets={presets} currentMember={currentMember} onRefresh={loadStatus} onBook={loadBookings} toast={toast} />
+          <Controls status={status} statusUpdatedAt={statusUpdatedAt} bookings={bookings} members={members} presets={presets} currentMember={currentMember} onRefresh={loadStatus} onBook={loadBookings} toast={toast}
+            tempF={ctrlTempF} setTempF={setCtrlTempF} duration={ctrlDuration} setDuration={setCtrlDuration} manuallySet={ctrlManuallySet} setManuallySet={setCtrlManuallySet} />
         )}
 
         {tab === 'members' && (
