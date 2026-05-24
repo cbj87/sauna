@@ -212,7 +212,15 @@ class HarviaClient:
         return self._graphql("device", query)
 
     def turn_on(self, target_temp_c: int, on_time_minutes: int) -> dict:
-        return self.set_state({"active": 1, "targetTemp": target_temp_c, "onTime": on_time_minutes})
+        # Send maxOnTime alongside onTime — the device firmware clamps the
+        # actual session timer to maxOnTime regardless of onTime, so without
+        # this the session can be silently capped (e.g. 90 min → 60).
+        return self.set_state({
+            "active": 1,
+            "targetTemp": target_temp_c,
+            "onTime": on_time_minutes,
+            "maxOnTime": on_time_minutes,
+        })
 
     def turn_off(self) -> dict:
         return self.set_state({"active": 0})

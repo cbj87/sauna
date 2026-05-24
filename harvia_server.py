@@ -1546,7 +1546,8 @@ def apply_preset(name: str):
         )
     finally:
         db.close()
-    payload = {"targetTemp": p_temp, "onTime": p_time, "active": 1}
+    # maxOnTime must match onTime — device firmware clamps actual timer to maxOnTime.
+    payload = {"targetTemp": p_temp, "onTime": p_time, "maxOnTime": p_time, "active": 1}
     if p_steam:
         payload["steamEn"] = 1
         if p_rh:
