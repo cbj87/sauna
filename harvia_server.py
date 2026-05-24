@@ -625,11 +625,65 @@ def refresh_harvia_token():
         harvia.proactive_refresh()
 
 
+# Observability: poll device state every 60s to build a timeseries during sessions
+# and catch "the device shut itself off and we don't know why" cases.  The previous
+# code only logged what we POSTed, leaving the device side opaque.
+_device_state_lock = threading.Lock()
+_last_device_active: int | None = None  # last polled `active` value
+_last_app_off_ts: float = 0.0           # monotonic ts of last app-initiated turn_off
+
+
+def log_device_state():
+    if not harvia:
+        return
+    global _last_device_active
+    try:
+        s = harvia.get_full_status()
+    except Exception as exc:
+        logger.warning("device tick: status fetch failed: %s", exc)
+        return
+
+    active = s.get("active") or 0
+    prev = _last_device_active
+
+    if active == 1:
+        logger.info(
+            "device tick: active=1 onTime=%s maxOnTime=%s remainingTime=%s "
+            "targetTemp=%s temp=%s heatOn=%s doorSafety=%s statusCodes=%s errorCodes=%s online=%s",
+            s.get("onTime"), s.get("maxOnTime"), s.get("remainingTime"),
+            s.get("targetTemp"), s.get("temperature"), s.get("heatOn"),
+            s.get("doorSafetyState"), s.get("statusCodes"), s.get("errorCodes"),
+            s.get("online"),
+        )
+
+    if prev == 1 and active == 0 and s.get("online"):
+        # Active just went 1→0 and the device is still online.  If we didn't fire
+        # a turn_off in the last ~90s, the device ended the session on its own —
+        # log loudly with surrounding state so the next outage is easy to debug.
+        recently_app_off = (_time.time() - _last_app_off_ts) < 90
+        if recently_app_off:
+            logger.info("device tick: active 1→0 (app-initiated, within 90s of /sauna/off)")
+        else:
+            logger.warning(
+                "device tick: SELF-SHUTOFF — active 1→0 with no recent app off. "
+                "onTime=%s maxOnTime=%s remainingTime=%s targetTemp=%s temp=%s "
+                "heatOn=%s doorSafety=%s statusCodes=%s errorCodes=%s online=%s",
+                s.get("onTime"), s.get("maxOnTime"), s.get("remainingTime"),
+                s.get("targetTemp"), s.get("temperature"), s.get("heatOn"),
+                s.get("doorSafetyState"), s.get("statusCodes"), s.get("errorCodes"),
+                s.get("online"),
+            )
+
+    with _device_state_lock:
+        _last_device_active = active
+
+
 scheduler = BackgroundScheduler(daemon=True)
 scheduler.add_job(check_and_auto_shutoff,  "interval", seconds=60,  id="auto_shutoff")
 scheduler.add_job(check_preheat_reminders, "interval", seconds=60,  id="preheat_reminders")
 scheduler.add_job(check_session_ending,    "interval", seconds=60,  id="session_ending")
 scheduler.add_job(refresh_harvia_token,    "interval", minutes=30,  id="token_refresh")
+scheduler.add_job(log_device_state,        "interval", seconds=60,  id="device_state_log")
 
 
 # ---------------------------------------------------------------------------
@@ -1316,6 +1370,8 @@ def sauna_off():
         db.close()
     try:
         get_harvia().turn_off()
+        global _last_app_off_ts
+        _last_app_off_ts = _time.time()
         _complete_running_bookings()
         _log_sauna_action(mid, mname, "off")
         _notify_admins_push({
