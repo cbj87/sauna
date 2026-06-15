@@ -5,6 +5,7 @@ Handles Cognito auth (SRP), token refresh, and all GraphQL calls.
 import collections
 import json
 import logging
+import math
 import threading
 import time
 
@@ -211,16 +212,56 @@ class HarviaClient:
         }
         return self._graphql("device", query)
 
+    @staticmethod
+    def device_on_time(requested_minutes: int) -> int:
+        """The device only honours whole-hour on-times (60, 120) and tops out
+        at 120. Round the requested duration UP to the next whole hour to act
+        as a hardware self-shutoff backstop; the app's scheduler enforces the
+        exact end time within this."""
+        hours = math.ceil(max(1, int(requested_minutes)) / 60)
+        return max(60, min(120, hours * 60))
+
+    def _reported_on_time(self):
+        try:
+            return self.get_device_state()["reported"].get("onTime")
+        except Exception as exc:
+            logger.warning("Could not read reported onTime: %s", exc)
+            return None
+
     def turn_on(self, target_temp_c: int, on_time_minutes: int) -> dict:
-        # Send maxOnTime alongside onTime — the device firmware clamps the
-        # actual session timer to maxOnTime regardless of onTime, so without
-        # this the session can be silently capped (e.g. 90 min → 60).
-        return self.set_state({
-            "active": 1,
-            "targetTemp": target_temp_c,
-            "onTime": on_time_minutes,
-            "maxOnTime": on_time_minutes,
-        })
+        """Turn the sauna on for ~on_time_minutes.
+
+        The device latches reported.onTime at the active 0->1 edge, and a
+        written onTime takes ~20-30s to commit from desired->reported. If we
+        activate in the same call (the old behaviour) the device latches a
+        stale onTime — the long-standing "session capped at 60 min" bug.
+
+        So we (1) stage the rounded onTime while off, (2) wait for it to commit
+        to reported, then (3) activate. maxOnTime is NOT writable on this unit
+        and is intentionally not sent.
+        """
+        device_minutes = self.device_on_time(on_time_minutes)
+
+        # 1. Stage onTime (+ targetTemp) while still off.
+        self.set_state({"onTime": device_minutes, "targetTemp": target_temp_c})
+
+        # 2. Wait for reported.onTime to commit so the activation latches it.
+        deadline = time.monotonic() + 45
+        committed = False
+        while time.monotonic() < deadline:
+            if self._reported_on_time() == device_minutes:
+                committed = True
+                break
+            time.sleep(3)
+        if not committed:
+            logger.warning(
+                "onTime did not commit to %d within 45s — activating anyway; "
+                "session length may be wrong this cycle", device_minutes)
+
+        # 3. Activate. reported.onTime is committed, so the device uses it.
+        logger.info("turn_on: device onTime=%d min (requested %d), committed=%s — activating",
+                    device_minutes, on_time_minutes, committed)
+        return self.set_state({"active": 1, "targetTemp": target_temp_c})
 
     def turn_off(self) -> dict:
         return self.set_state({"active": 0})

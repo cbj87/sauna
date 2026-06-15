@@ -1105,7 +1105,22 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
 
   const currentTempF = status?.temperatureF ?? cToF(status?.temperature);
   const targetTempF  = status?.targetTempF  ?? cToF(status?.targetTemp);
-  const remaining = status?.remainingTime;
+  // The device's own remainingTime is unreliable (it reflects the hardware's
+  // whole-hour timer, not the booked duration). When a session is running,
+  // show minutes until the booking's actual end — that's what the server
+  // enforces. Fall back to the device value only when there's no booking.
+  const remaining = (() => {
+    if (sauna_on && activeSessionBooking?.end_time) {
+      const [h, m] = activeSessionBooking.end_time.split(':').map(Number);
+      const now = new Date();
+      const end = new Date(now);
+      end.setHours(h, m, 0, 0);
+      let diff = Math.round((end - now) / 60000);
+      if (diff < 0) diff += 24 * 60; // booking crosses midnight
+      return diff;
+    }
+    return status?.remainingTime ?? null;
+  })();
 
   return (
     <>

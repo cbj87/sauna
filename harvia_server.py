@@ -377,6 +377,44 @@ def csrf_protect():
 # Background scheduler — auto-shutoff
 # ---------------------------------------------------------------------------
 
+def _safe_turn_off(reason: str = "") -> bool:
+    """Turn the sauna off and VERIFY it actually went off. Retries once and
+    alerts admins if it stays on — because a session that outruns its booking
+    is the one failure mode that actually matters here. Never raises.
+
+    Returns True if confirmed off (or off command sent and unverifiable)."""
+    global _last_app_off_ts
+    client = get_harvia()
+    for attempt in (1, 2):
+        try:
+            client.turn_off()
+            _last_app_off_ts = _time.time()
+        except Exception as exc:
+            logger.error("turn_off command failed (attempt %d, %s): %s", attempt, reason, exc)
+            _time.sleep(2)
+            continue
+        _time.sleep(3)
+        try:
+            reported = client.get_device_state().get("reported", {})
+        except Exception as exc:
+            logger.warning("Could not verify off state (%s): %s — assuming off", reason, exc)
+            return True
+        if not reported.get("active"):
+            logger.info("Sauna confirmed off (%s)", reason)
+            return True
+        logger.warning("Sauna still active after off command (attempt %d, %s)", attempt, reason)
+        _time.sleep(2)
+
+    logger.error("CRITICAL: sauna failed to turn off (%s)", reason)
+    _notify_admins_push({
+        "title": "⚠️ Sauna may still be ON",
+        "body": "Automatic shut-off could not confirm the sauna turned off. Please check it manually.",
+        "tag": "sauna-shutoff-failed",
+        "url": "/",
+    })
+    return False
+
+
 def check_and_auto_shutoff():
     now = app_now()
     today = now.date()
@@ -478,11 +516,7 @@ def check_and_auto_shutoff():
                 .first()
             )
             if not still_today and not still_midnight:
-                try:
-                    get_harvia().turn_off()
-                    logger.info("Auto-shutoff: sauna turned off after booking ended")
-                except Exception as exc:
-                    logger.error("Auto-shutoff failed: %s", exc)
+                _safe_turn_off("auto-shutoff after booking ended")
 
 
 def check_preheat_reminders():
@@ -1369,9 +1403,7 @@ def sauna_off():
     finally:
         db.close()
     try:
-        get_harvia().turn_off()
-        global _last_app_off_ts
-        _last_app_off_ts = _time.time()
+        _safe_turn_off(f"manual off by {mname}")
         _complete_running_bookings()
         _log_sauna_action(mid, mname, "off")
         _notify_admins_push({

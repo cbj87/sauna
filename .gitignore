@@ -6,3 +6,5 @@ __pycache__/
 *.pyc
 *.pyo
 .env.local
+.DS_Store
+latency_logs/
