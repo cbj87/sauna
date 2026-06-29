@@ -24,7 +24,19 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.types import Integer as _SAInteger, Date as _SADate, Time as _SATime, Boolean as _SABoolean
 
 from harvia_client import HarviaClient
-from models import DB_PATH, Booking, ControlLog, FamilyMember, Preset, PushSubscription, SessionLocal, init_db
+from models import (
+    DB_PATH,
+    Booking,
+    ControlLog,
+    FamilyMember,
+    LiveActivityPushToStartToken,
+    LiveActivityToken,
+    NativeDevice,
+    Preset,
+    PushSubscription,
+    SessionLocal,
+    init_db,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
@@ -58,6 +70,12 @@ VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC_KEY = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_CLAIMS_EMAIL = os.environ.get("VAPID_CLAIMS_EMAIL", "sweatbox@localhost")
 
+APNS_KEY_ID = os.environ.get("APNS_KEY_ID", "")
+APNS_TEAM_ID = os.environ.get("APNS_TEAM_ID", "")
+APNS_PRIVATE_KEY = os.environ.get("APNS_PRIVATE_KEY", "")
+APNS_BUNDLE_ID = os.environ.get("APNS_BUNDLE_ID", "dev.cbj87.SweatBox")
+APNS_USE_SANDBOX = os.environ.get("APNS_USE_SANDBOX", "1").lower() not in ("0", "false", "no")
+
 APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Australia/Sydney")
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
@@ -89,6 +107,7 @@ _login_lock = threading.Lock()
 # Serialises the overlap-check + insert so two simultaneous requests can't
 # both pass the overlap check before either has committed.
 _booking_lock = threading.Lock()
+_apns_jwt_cache: dict[str, float | str] = {"token": "", "created_at": 0.0}
 
 
 def _get_client_ip() -> str:
@@ -209,6 +228,71 @@ def _send_push(sub_info: dict, payload: dict):
         return False
 
 
+def _apns_is_configured() -> bool:
+    return bool(APNS_KEY_ID and APNS_TEAM_ID and APNS_PRIVATE_KEY and APNS_BUNDLE_ID)
+
+
+def _apns_private_key() -> str:
+    return APNS_PRIVATE_KEY.replace("\\n", "\n")
+
+
+def _apns_jwt() -> str:
+    """Return a cached APNs provider JWT."""
+    now = _time.time()
+    cached_token = str(_apns_jwt_cache.get("token") or "")
+    cached_created_at = float(_apns_jwt_cache.get("created_at") or 0)
+    if cached_token and now - cached_created_at < 45 * 60:
+        return cached_token
+
+    import jwt
+
+    token = jwt.encode(
+        {"iss": APNS_TEAM_ID, "iat": int(now)},
+        _apns_private_key(),
+        algorithm="ES256",
+        headers={"alg": "ES256", "kid": APNS_KEY_ID},
+    )
+    _apns_jwt_cache["token"] = token
+    _apns_jwt_cache["created_at"] = now
+    return token
+
+
+def _send_live_activity_apns(token: str, payload: dict) -> tuple[bool, int | None, str | None]:
+    """Send one ActivityKit APNs payload.
+
+    Returns (ok, status_code, response_body). Missing APNs config is a soft failure.
+    """
+    if not _apns_is_configured():
+        return False, None, "APNs is not configured"
+
+    host = "api.sandbox.push.apple.com" if APNS_USE_SANDBOX else "api.push.apple.com"
+    url = f"https://{host}/3/device/{token}"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload, separators=(",", ":")).encode(),
+        headers={
+            "authorization": f"bearer {_apns_jwt()}",
+            "apns-topic": f"{APNS_BUNDLE_ID}.push-type.liveactivity",
+            "apns-push-type": "liveactivity",
+            "apns-priority": "10",
+            "content-type": "application/json",
+            "user-agent": "SweatBox/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read().decode(errors="replace")
+            return 200 <= resp.status < 300, resp.status, body
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        logger.warning("Live Activity APNs HTTP error %s: %s", exc.code, body)
+        return False, exc.code, body
+    except Exception as exc:
+        logger.error("Live Activity APNs send failed: %s", exc)
+        return False, None, str(exc)
+
+
 def _notify_admins_push(payload: dict, pref_key: str | None = None) -> None:
     """Send a push notification to admin subscribers who have opted in.
 
@@ -297,6 +381,64 @@ def status_with_f(status: dict) -> dict:
     if out.get("temperature") is not None:
         out["temperatureF"] = c_to_f(out["temperature"])
     return out
+
+
+def _booking_remaining_minutes(booking: Booking, now: datetime | None = None) -> int:
+    now = now or app_now()
+    end_dt = datetime.combine(now.date(), booking.end_time)
+    if booking.end_time < booking.start_time and now.time() < booking.end_time:
+        end_dt = datetime.combine(now.date(), booking.end_time)
+    elif booking.end_time < booking.start_time:
+        end_dt = datetime.combine(now.date() + timedelta(days=1), booking.end_time)
+    remaining = round((end_dt - now).total_seconds() / 60)
+    return max(0, remaining)
+
+
+def _live_activity_payload_for_booking(booking: Booking, status: dict | None = None) -> dict:
+    status = status or {}
+    current_temp_f = status.get("temperatureF")
+    if current_temp_f is None and status.get("temperature") is not None:
+        current_temp_f = c_to_f(status["temperature"])
+    target_temp_f = c_to_f(booking.target_temp) if booking.target_temp is not None else status.get("targetTempF")
+    return {
+        "bookingId": booking.id,
+        "memberId": booking.member_id,
+        "bookingName": f"{booking.member.name}'s Session" if booking.member else "Sauna Session",
+        "currentTempF": current_temp_f,
+        "targetTempF": target_temp_f,
+        "remainingMinutes": _booking_remaining_minutes(booking),
+        "heatOn": bool(status.get("active", True)),
+        "active": booking.status in ("active", "preheating", "scheduled"),
+        "updatedAtMillis": int(_time.time() * 1000),
+    }
+
+
+def _current_live_booking(db, member: FamilyMember | None = None) -> Booking | None:
+    now = app_now()
+    today = now.date()
+    yesterday = today - timedelta(days=1)
+    current_time = now.time()
+
+    filters = [Booking.status.in_(["active", "preheating"])]
+    if member is not None:
+        filters.append(Booking.member_id == member.id)
+
+    return (
+        db.query(Booking)
+        .filter(
+            *filters,
+            (
+                (Booking.date == today)
+                | (
+                    (Booking.date == yesterday)
+                    & (Booking.end_time < Booking.start_time)
+                    & (Booking.end_time > current_time)
+                )
+            ),
+        )
+        .order_by(Booking.date.desc(), Booking.start_time.desc())
+        .first()
+    )
 
 
 def current_member(db):
@@ -1835,6 +1977,207 @@ def push_test():
         if sent == 0:
             return err(f"Notification delivery failed on all {failed} subscription(s) — check server logs"), 502
         return jsonify({"ok": True, "sent": sent, "failed": failed})
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# Native iOS / ActivityKit routes
+# ---------------------------------------------------------------------------
+
+def _upsert_native_device(db, member: FamilyMember, body: dict) -> NativeDevice | None:
+    native_device_id = (body.get("nativeDeviceId") or body.get("native_device_id") or "").strip()
+    if not native_device_id:
+        return None
+
+    device = db.query(NativeDevice).filter_by(native_device_id=native_device_id).first()
+    if not device:
+        device = NativeDevice(native_device_id=native_device_id, member_id=member.id)
+        db.add(device)
+    device.member_id = member.id
+    device.platform = (body.get("platform") or "ios").strip() or "ios"
+    device.app_version = (body.get("appVersion") or body.get("app_version") or device.app_version)
+    apns_token = (body.get("apnsToken") or body.get("apns_token") or "").strip()
+    if apns_token:
+        device.apns_token = apns_token
+    device.last_seen_at = datetime.utcnow()
+    return device
+
+
+@app.route("/api/native/device-token", methods=["POST"])
+def native_device_token():
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        body = request.get_json(silent=True) or {}
+        device = _upsert_native_device(db, member, body)
+        if not device:
+            return err("nativeDeviceId is required")
+        db.commit()
+        return jsonify({"ok": True, "nativeDeviceId": device.native_device_id})
+    finally:
+        db.close()
+
+
+@app.route("/api/native/live-activity/push-to-start-token", methods=["POST"])
+def native_push_to_start_token():
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        body = request.get_json(silent=True) or {}
+        token = (body.get("token") or "").strip()
+        device = _upsert_native_device(db, member, body)
+        if not device:
+            return err("nativeDeviceId is required")
+        if not token:
+            return err("token is required")
+
+        existing = db.query(LiveActivityPushToStartToken).filter_by(native_device_id=device.native_device_id).first()
+        if not existing:
+            existing = db.query(LiveActivityPushToStartToken).filter_by(token=token).first()
+        if existing:
+            existing.member_id = member.id
+            existing.native_device_id = device.native_device_id
+            existing.token = token
+            existing.updated_at = datetime.utcnow()
+        else:
+            db.add(LiveActivityPushToStartToken(
+                member_id=member.id,
+                native_device_id=device.native_device_id,
+                token=token,
+                updated_at=datetime.utcnow(),
+            ))
+        db.commit()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
+@app.route("/api/native/live-activity/token", methods=["POST"])
+def native_live_activity_token():
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        body = request.get_json(silent=True) or {}
+        token = (body.get("token") or "").strip()
+        state = (body.get("state") or body.get("activityState") or "").strip()
+        booking_id = body.get("bookingId") or body.get("booking_id")
+        device = _upsert_native_device(db, member, body)
+        if not device:
+            return err("nativeDeviceId is required")
+        if not token:
+            return err("token is required")
+
+        if state in ("ended", "dismissed"):
+            db.query(LiveActivityToken).filter_by(token=token).delete()
+            db.commit()
+            return jsonify({"ok": True, "removed": True})
+
+        existing = db.query(LiveActivityToken).filter_by(token=token).first()
+        if existing:
+            existing.member_id = member.id
+            existing.native_device_id = device.native_device_id
+            existing.booking_id = int(booking_id) if booking_id is not None else None
+            existing.activity_state = state or existing.activity_state
+            existing.updated_at = datetime.utcnow()
+        else:
+            db.add(LiveActivityToken(
+                member_id=member.id,
+                native_device_id=device.native_device_id,
+                booking_id=int(booking_id) if booking_id is not None else None,
+                token=token,
+                activity_state=state or None,
+                updated_at=datetime.utcnow(),
+            ))
+        db.commit()
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
+@app.route("/api/native/live-activity/token", methods=["DELETE"])
+def delete_native_live_activity_token():
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        body = request.get_json(silent=True) or {}
+        token = (body.get("token") or "").strip()
+        native_device_id = (body.get("nativeDeviceId") or body.get("native_device_id") or "").strip()
+        q = db.query(LiveActivityToken).filter_by(member_id=member.id)
+        if token:
+            q = q.filter_by(token=token)
+        elif native_device_id:
+            q = q.filter_by(native_device_id=native_device_id)
+        else:
+            return err("token or nativeDeviceId is required")
+        removed = q.delete()
+        db.commit()
+        return jsonify({"ok": True, "removed": removed})
+    finally:
+        db.close()
+
+
+@app.route("/api/native/live-session")
+def native_live_session():
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        booking = _current_live_booking(db, member)
+        if not booking and member.is_admin and member.live_activity_all_sessions:
+            booking = _current_live_booking(db)
+        if not booking:
+            return jsonify({"session": None})
+        return jsonify({"session": _live_activity_payload_for_booking(booking)})
+    finally:
+        db.close()
+
+
+@app.route("/api/admin/native/live-activity/test", methods=["POST"])
+def admin_test_live_activity_push():
+    db, member, error = require_admin()
+    if error:
+        return error
+    try:
+        body = request.get_json(silent=True) or {}
+        token = (body.get("token") or "").strip()
+        if not token:
+            stored = (
+                db.query(LiveActivityToken)
+                .order_by(LiveActivityToken.updated_at.desc())
+                .first()
+            )
+            token = stored.token if stored else ""
+        if not token:
+            return err("No Live Activity token available")
+
+        booking = _current_live_booking(db, member) or _current_live_booking(db)
+        state = _live_activity_payload_for_booking(booking) if booking else {
+            "bookingId": None,
+            "memberId": member.id,
+            "bookingName": "Test Session",
+            "currentTempF": int(body.get("currentTempF") or 188),
+            "targetTempF": int(body.get("targetTempF") or 194),
+            "remainingMinutes": int(body.get("remainingMinutes") or 12),
+            "heatOn": True,
+            "active": True,
+            "updatedAtMillis": int(_time.time() * 1000),
+        }
+        payload = {
+            "aps": {
+                "timestamp": int(_time.time()),
+                "event": "update",
+                "content-state": state,
+            }
+        }
+        ok, status_code, response_body = _send_live_activity_apns(token, payload)
+        if not ok:
+            return err(response_body or "Live Activity push failed", status_code or 502)
+        return jsonify({"ok": True, "status": status_code})
     finally:
         db.close()
 

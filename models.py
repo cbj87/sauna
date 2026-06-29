@@ -10,6 +10,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     Time,
     create_engine,
     event,
@@ -63,6 +64,7 @@ class FamilyMember(Base):
     color = Column(String, default="#F97316")    # hex color for calendar display
     # JSON text: {"preheat": true, "signup": true, "booking": true} — null = all defaults on
     notification_prefs = Column(Text, nullable=True)
+    live_activity_all_sessions = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     bookings = relationship("Booking", back_populates="member", cascade="all, delete-orphan")
@@ -86,6 +88,7 @@ class FamilyMember(Base):
             "max_temp": self.max_temp,
             "color": self.color,
             "notification_prefs": self.get_notification_prefs(),
+            "live_activity_all_sessions": bool(self.live_activity_all_sessions),
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 
@@ -171,6 +174,47 @@ class PushSubscription(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
+class NativeDevice(Base):
+    __tablename__ = "native_devices"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    member_id = Column(Integer, ForeignKey("family_members.id", ondelete="CASCADE"), nullable=False)
+    native_device_id = Column(String, unique=True, nullable=False)
+    apns_token = Column(Text, nullable=True)
+    platform = Column(String, default="ios")
+    app_version = Column(String, nullable=True)
+    last_seen_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LiveActivityPushToStartToken(Base):
+    __tablename__ = "live_activity_push_to_start_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    member_id = Column(Integer, ForeignKey("family_members.id", ondelete="CASCADE"), nullable=False)
+    native_device_id = Column(String, ForeignKey("native_devices.native_device_id", ondelete="CASCADE"), nullable=False)
+    token = Column(Text, unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("native_device_id", name="uq_live_activity_push_to_start_native_device"),
+    )
+
+
+class LiveActivityToken(Base):
+    __tablename__ = "live_activity_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    member_id = Column(Integer, ForeignKey("family_members.id", ondelete="CASCADE"), nullable=False)
+    native_device_id = Column(String, ForeignKey("native_devices.native_device_id", ondelete="CASCADE"), nullable=False)
+    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=True)
+    token = Column(Text, unique=True, nullable=False)
+    activity_state = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 class ControlLog(Base):
     __tablename__ = "control_log"
 
@@ -211,6 +255,7 @@ def _migrate_db():
         "ALTER TABLE family_members ADD COLUMN password_hash TEXT",
         "ALTER TABLE family_members ADD COLUMN reset_token TEXT",
         "ALTER TABLE family_members ADD COLUMN reset_token_expires DATETIME",
+        "ALTER TABLE family_members ADD COLUMN live_activity_all_sessions INTEGER DEFAULT 0",
     ]
     with engine.connect() as conn:
         for stmt in migrations:

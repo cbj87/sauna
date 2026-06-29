@@ -55,6 +55,11 @@
       .pwa-main       { padding-bottom: calc(5rem + env(safe-area-inset-bottom)) !important; }
       .pwa-fab        { bottom: calc(4.75rem + env(safe-area-inset-bottom)) !important; }
     }
+    .native-wrapper .pwa-top-nav    { display: none !important; }
+    .native-wrapper .pwa-bottom-nav { display: block !important; }
+    .native-wrapper .pwa-header     { padding-top: calc(1rem + env(safe-area-inset-top)) !important; }
+    .native-wrapper .pwa-main       { padding-bottom: calc(5rem + env(safe-area-inset-bottom)) !important; }
+    .native-wrapper .pwa-fab        { bottom: calc(4.75rem + env(safe-area-inset-bottom)) !important; }
   </style>
 </head>
 <body>
@@ -81,6 +86,50 @@ const localDate = d => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDat
 
 let _onSessionExpired = null;
 let _csrfToken = null;
+
+const NativeBridge = (() => {
+  const isNative = /\bSweatBoxNative\/[\d.]+/.test(navigator.userAgent);
+  const channels = window.webkit?.messageHandlers || {};
+  const post = (channel, payload = {}) => {
+    if (!isNative) return false;
+    const handler = channels[channel];
+    if (!handler?.postMessage) return false;
+    handler.postMessage(payload);
+    return true;
+  };
+  const uploadNativePayload = async (path, payload) => {
+    if (!isNative) return;
+    const nativeDeviceId = window.__nativeDeviceId;
+    if (!nativeDeviceId) return;
+    try {
+      await api(path, {
+        method: 'POST',
+        body: { nativeDeviceId, platform: 'ios', ...payload },
+      });
+    } catch(e) {
+      console.warn('Native token upload failed:', e);
+    }
+  };
+
+  window.addEventListener('live-activity-token', event => {
+    console.debug('Live Activity token from native', event.detail);
+    uploadNativePayload('/api/native/live-activity/token', event.detail || {});
+  });
+  window.addEventListener('push-to-start-token', event => {
+    console.debug('Push-to-start token from native', event.detail);
+    uploadNativePayload('/api/native/live-activity/push-to-start-token', event.detail || {});
+  });
+
+  return {
+    isNative,
+    get deviceId() { return window.__nativeDeviceId || null; },
+    startSaunaSession: payload => post('startSaunaSession', payload),
+    updateSaunaSession: payload => post('updateSaunaSession', payload),
+    endSaunaSession: payload => post('endSaunaSession', payload),
+    repostLiveActivityTokens: () => post('repostLiveActivityTokens'),
+    signOut: () => post('signOut'),
+  };
+})();
 
 async function api(path, opts = {}) {
   const controller = new AbortController();
@@ -1059,9 +1108,22 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
     try {
       if (sauna_on) {
         await api('/api/sauna/off', {method:'POST'});
+        NativeBridge.endSaunaSession({
+          bookingId: activeSessionBooking?.id ?? null,
+          reason: 'manual-off',
+          updatedAtMillis: Date.now(),
+        });
         toast('Sauna turned off', 'info');
       } else {
         await api('/api/sauna/on', {method:'POST', body:{targetTempF: Math.min(tempF, myMaxTempF), onTime: duration}});
+        NativeBridge.startSaunaSession({
+          ...nativeSessionPayload(),
+          targetTempF: Math.min(tempF, myMaxTempF),
+          remainingMinutes: duration,
+          heatOn: true,
+          active: true,
+          updatedAtMillis: Date.now(),
+        });
         toast('Sauna is heating up!', 'success');
       }
       setTimeout(onRefresh, 1500);
@@ -1087,6 +1149,17 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
       }});
       toast('Session booked!', 'success');
       await api('/api/sauna/on', {method:'POST', body:{targetTempF: cToF(cappedTempC), onTime: seedDur}});
+      NativeBridge.startSaunaSession({
+        bookingId: null,
+        memberId: currentMember?.id ?? null,
+        bookingName: `${currentMember?.name || 'Sauna'}'s Session`,
+        currentTempF,
+        targetTempF: cToF(cappedTempC),
+        remainingMinutes: seedDur,
+        heatOn: true,
+        active: true,
+        updatedAtMillis: Date.now(),
+      });
       toast('Sauna is heating up! 🔥', 'success');
       if (onBook) onBook();
       setTimeout(onRefresh, 1500);
@@ -1100,6 +1173,15 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
     try {
       await api(`/api/sauna/preset/${name}`, {method:'POST'});
       const p = presets.find(x => x.name === name);
+      NativeBridge.startSaunaSession({
+        ...nativeSessionPayload(),
+        bookingName: p?.label || name,
+        targetTempF: p?.target_temp != null ? cToF(p.target_temp) : targetTempF,
+        remainingMinutes: p?.on_time ?? duration,
+        heatOn: true,
+        active: true,
+        updatedAtMillis: Date.now(),
+      });
       toast(`${p?.label || name} started!`, 'success');
       setTimeout(onRefresh, 1500);
     } catch(e) { toast(e.message, 'error'); }
@@ -1124,6 +1206,23 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
     }
     return status?.remainingTime ?? null;
   })();
+
+  const nativeSessionPayload = () => ({
+    bookingId: activeSessionBooking?.id ?? null,
+    memberId: activeSessionBooking?.member_id ?? currentMember?.id ?? null,
+    bookingName: activeSessionBooking?.member_name ? `${activeSessionBooking.member_name}'s Session` : 'Sauna Session',
+    currentTempF,
+    targetTempF: targetTempF ?? Math.min(tempF, myMaxTempF),
+    remainingMinutes: remaining ?? duration,
+    heatOn: sauna_on,
+    active: sauna_on,
+    updatedAtMillis: Date.now(),
+  });
+
+  useEffect(() => {
+    if (!sauna_on) return;
+    NativeBridge.updateSaunaSession(nativeSessionPayload());
+  }, [sauna_on, activeSessionBooking?.id, currentTempF, targetTempF, remaining]);
 
   return (
     <>
@@ -2481,6 +2580,7 @@ function MainApp({ currentMember, onLogout }) {
   }
 
   useEffect(() => {
+    NativeBridge.repostLiveActivityTokens();
     api('/api/config').then(cfg => {
       const w = cfg.booking_window_days || 30;
       setBookingWindowDays(w);
@@ -2727,6 +2827,20 @@ function MainApp({ currentMember, onLogout }) {
   async function handlePreheat(id) {
     try {
       await api(`/api/bookings/${id}/preheat`, {method:'POST'});
+      const booking = bookings.find(b => b.id === id);
+      if (booking) {
+        NativeBridge.startSaunaSession({
+          bookingId: booking.id,
+          memberId: booking.member_id ?? currentMember?.id ?? null,
+          bookingName: booking.member_name ? `${booking.member_name}'s Session` : 'Sauna Session',
+          currentTempF: status?.temperatureF ?? cToF(status?.temperature),
+          targetTempF: cToF(booking.target_temp),
+          remainingMinutes: booking.on_time ?? null,
+          heatOn: true,
+          active: true,
+          updatedAtMillis: Date.now(),
+        });
+      }
       toast('Preheating started!', 'success');
       setSelectedSlot(null);
       loadBookings();
@@ -3067,6 +3181,7 @@ function App() {
   }
 
   async function handleLogout() {
+    NativeBridge.signOut();
     try { await api('/api/auth/logout', {method:'POST'}); } catch {}
     _csrfToken = null;
     setCurrentMember(null);

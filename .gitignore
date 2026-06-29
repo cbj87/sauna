@@ -8,3 +8,8 @@ __pycache__/
 .env.local
 .DS_Store
 latency_logs/
+.claude/launch.json
+
+# Xcode per-user state — churns on every open, no value in repo
+xcuserdata/
+*.xcuserstate
