@@ -441,6 +441,104 @@ def _current_live_booking(db, member: FamilyMember | None = None) -> Booking | N
     )
 
 
+def _live_activity_recipient_tokens(db, booking: Booking) -> list[LiveActivityToken]:
+    """Tokens that should receive a push for this booking.
+
+    The booking owner's devices plus any admin opted into all-session
+    visibility. Matching is by member, not booking_id — devices may have
+    started activities locally without a server-supplied booking_id.
+    """
+    eligible_member_ids = {booking.member_id}
+    admins = (
+        db.query(FamilyMember)
+        .filter_by(is_admin=1, status="approved", live_activity_all_sessions=1)
+        .all()
+    )
+    eligible_member_ids.update(a.id for a in admins)
+    return (
+        db.query(LiveActivityToken)
+        .filter(LiveActivityToken.member_id.in_(eligible_member_ids))
+        .all()
+    )
+
+
+def _push_live_activity_to_tokens(
+    db,
+    tokens: list[LiveActivityToken],
+    content_state: dict,
+    event: str = "update",
+    dismissal_date: int | None = None,
+) -> int:
+    """Send one APNs Live Activity push to each token. Deletes stale tokens. Returns delete count."""
+    if not tokens or not _apns_is_configured():
+        return 0
+
+    aps: dict = {
+        "timestamp": int(_time.time()),
+        "event": event,
+        "content-state": content_state,
+    }
+    if dismissal_date is not None:
+        aps["dismissal-date"] = dismissal_date
+    payload = {"aps": aps}
+
+    deleted = 0
+    for token_row in tokens:
+        ok, status_code, body = _send_live_activity_apns(token_row.token, payload)
+        if ok:
+            continue
+        is_stale = status_code in (400, 410) and isinstance(body, str) and (
+            "BadDeviceToken" in body
+            or "Unregistered" in body
+            or "ExpiredToken" in body
+            or "DeviceTokenNotForTopic" in body
+        )
+        if is_stale:
+            db.delete(token_row)
+            deleted += 1
+            logger.info("Removed stale Live Activity token id=%s status=%s", token_row.id, status_code)
+        else:
+            logger.warning(
+                "Live Activity push failed token_id=%s status=%s body=%s",
+                token_row.id, status_code, body,
+            )
+    if deleted:
+        db.commit()
+    return deleted
+
+
+def _fanout_live_activity_end(booking_id: int, reason: str = "ended") -> None:
+    """Send an `end` push for the booking and drop its tokens. Safe to call any time."""
+    if not _apns_is_configured():
+        return
+    try:
+        with SessionLocal() as db:
+            booking = db.get(Booking, booking_id)
+            if not booking:
+                return
+            tokens = _live_activity_recipient_tokens(db, booking)
+            if not tokens:
+                return
+            content_state = _live_activity_payload_for_booking(booking)
+            content_state["heatOn"] = False
+            content_state["active"] = False
+            content_state["remainingMinutes"] = 0
+            _push_live_activity_to_tokens(
+                db, tokens, content_state,
+                event="end",
+                dismissal_date=int(_time.time()),
+            )
+            # Tokens for this booking are dead weight now; surviving tokens for
+            # other bookings stay. Match by booking_id when set; treat NULL as
+            # legacy/test rows and drop them too.
+            for token_row in tokens:
+                if token_row.booking_id == booking.id or token_row.booking_id is None:
+                    db.delete(token_row)
+            db.commit()
+    except Exception as exc:
+        logger.error("_fanout_live_activity_end(booking_id=%s) failed: %s", booking_id, exc)
+
+
 def current_member(db):
     """Return the logged-in FamilyMember or None."""
     member_id = session.get("member_id")
@@ -632,8 +730,15 @@ def check_and_auto_shutoff():
             booking.status = "completed"
             logger.info("Auto-completed booking %d", booking.id)
 
+        # Capture IDs *before* commit so we can fan out end pushes after the
+        # transaction lands. SQLAlchemy may detach instances after commit.
+        ended_booking_ids = [b.id for b in past_bookings]
+
         if newly_active or past_bookings:
             db.commit()
+
+        for ended_id in ended_booking_ids:
+            _fanout_live_activity_end(ended_id, reason="auto-shutoff")
 
         if past_bookings:
             # Turn off sauna only if no other booking is still running
@@ -854,12 +959,41 @@ def log_device_state():
         _last_device_active = active
 
 
+def push_live_activity_updates():
+    """Send Live Activity update pushes to subscribed devices during an active session.
+
+    Returns immediately when there's no active/preheating booking — keeps
+    the per-tick cost near zero outside of sessions.
+    """
+    if not _apns_is_configured():
+        return
+    try:
+        with SessionLocal() as db:
+            booking = _current_live_booking(db)
+            if not booking:
+                return
+            tokens = _live_activity_recipient_tokens(db, booking)
+            if not tokens:
+                return
+            status = None
+            if harvia:
+                try:
+                    status = status_with_f(harvia.get_status())
+                except Exception as exc:
+                    logger.warning("Live Activity update: Harvia status fetch failed: %s", exc)
+            content_state = _live_activity_payload_for_booking(booking, status)
+            _push_live_activity_to_tokens(db, tokens, content_state, event="update")
+    except Exception as exc:
+        logger.error("push_live_activity_updates failed: %s", exc)
+
+
 scheduler = BackgroundScheduler(daemon=True)
-scheduler.add_job(check_and_auto_shutoff,  "interval", seconds=60,  id="auto_shutoff")
-scheduler.add_job(check_preheat_reminders, "interval", seconds=60,  id="preheat_reminders")
-scheduler.add_job(check_session_ending,    "interval", seconds=60,  id="session_ending")
-scheduler.add_job(refresh_harvia_token,    "interval", minutes=30,  id="token_refresh")
-scheduler.add_job(log_device_state,        "interval", seconds=60,  id="device_state_log")
+scheduler.add_job(check_and_auto_shutoff,    "interval", seconds=60,  id="auto_shutoff")
+scheduler.add_job(check_preheat_reminders,   "interval", seconds=60,  id="preheat_reminders")
+scheduler.add_job(check_session_ending,      "interval", seconds=60,  id="session_ending")
+scheduler.add_job(refresh_harvia_token,      "interval", minutes=30,  id="token_refresh")
+scheduler.add_job(log_device_state,          "interval", seconds=60,  id="device_state_log")
+scheduler.add_job(push_live_activity_updates,"interval", seconds=60,  id="live_activity_updates")
 
 
 # ---------------------------------------------------------------------------
@@ -1542,12 +1676,16 @@ def sauna_off():
         return error
     try:
         mid, mname = member.id, member.name
+        running = _current_live_booking(db)
+        running_booking_id = running.id if running else None
     finally:
         db.close()
     try:
         _safe_turn_off(f"manual off by {mname}")
         _complete_running_bookings()
         _log_sauna_action(mid, mname, "off")
+        if running_booking_id is not None:
+            _fanout_live_activity_end(running_booking_id, reason="manual-off")
         _notify_admins_push({
             "title": "❄️ Sauna turned off",
             "body": f"Turned off by {mname}.",

@@ -180,30 +180,30 @@ Plan for a native iOS wrapper that embeds the existing Sweat Box web app and add
 - [x] Build APNs payload from one normalized sauna session object. (`_live_activity_payload_for_booking()`)
 - [x] Admin manual test endpoint. (`POST /api/admin/native/live-activity/test`)
 - [ ] Send `start` pushes to eligible devices when an active session begins. (needs push-to-start fan-out tied to `_current_live_booking` transitions)
-- [ ] Send `update` pushes to per-activity tokens during an active session.
-- [ ] Send `end` pushes when sauna turns off or booking completes. (hook into `/api/sauna/off` and `check_and_auto_shutoff()`)
-- [ ] Remove stale tokens on APNs stale-token responses. (410 BadDeviceToken → delete row)
-- [ ] Log push failures without breaking scheduler jobs.
+- [x] Send `update` pushes to per-activity tokens during an active session. (`push_live_activity_updates` scheduler job, 60s interval)
+- [x] Send `end` pushes when sauna turns off or booking completes. (`_fanout_live_activity_end` called from `/api/sauna/off` and `check_and_auto_shutoff()`)
+- [x] Remove stale tokens on APNs stale-token responses. (`_push_live_activity_to_tokens` deletes on 400/410 with BadDeviceToken / Unregistered / ExpiredToken / DeviceTokenNotForTopic)
+- [x] Log push failures without breaking scheduler jobs.
 
 ## Group 10: Active-Session-Only Polling
 
-- [ ] Add helper to find the active/preheating booking before contacting Harvia.
-- [ ] Skip Harvia status polling when there is no active/preheating booking.
-- [ ] Skip Live Activity update fanout when there is no active/preheating booking.
-- [ ] During an active/preheating booking, poll Harvia at most once per scheduler tick.
-- [ ] Reuse the same status payload for all eligible Live Activity recipients.
-- [ ] End any lingering Live Activities when the booking completes or the sauna is detected off.
-- [ ] Avoid duplicate Harvia calls between existing scheduler jobs and Live Activity updates where practical.
-- [ ] Add logs that distinguish skipped polling from failed polling.
+- [x] Add helper to find the active/preheating booking before contacting Harvia. (`_current_live_booking()`)
+- [x] Skip Harvia status polling when there is no active/preheating booking. (early return in `push_live_activity_updates`)
+- [x] Skip Live Activity update fanout when there is no active/preheating booking.
+- [x] During an active/preheating booking, poll Harvia at most once per scheduler tick.
+- [x] Reuse the same status payload for all eligible Live Activity recipients.
+- [x] End any lingering Live Activities when the booking completes or the sauna is detected off.
+- [ ] Avoid duplicate Harvia calls between existing scheduler jobs and Live Activity updates where practical. (`log_device_state` also calls `get_full_status` every 60s — could share cache later)
+- [x] Add logs that distinguish skipped polling from failed polling.
 
 ## Group 11: Scheduler Integration
 
-- [ ] Add `push_live_activity_updates()` scheduler job.
-- [ ] Run it every 60 seconds.
-- [ ] Ensure the job exits quickly when no session is active.
-- [ ] Coordinate with `check_and_auto_shutoff()` so completed bookings end Live Activities.
-- [ ] Coordinate with manual `/api/sauna/off` so off events end Live Activities promptly.
-- [ ] Make the job safe if Harvia credentials are missing in UI-only dev.
+- [x] Add `push_live_activity_updates()` scheduler job.
+- [x] Run it every 60 seconds.
+- [x] Ensure the job exits quickly when no session is active.
+- [x] Coordinate with `check_and_auto_shutoff()` so completed bookings end Live Activities.
+- [x] Coordinate with manual `/api/sauna/off` so off events end Live Activities promptly.
+- [x] Make the job safe if Harvia credentials are missing in UI-only dev.
 
 ## Group 12: Deep Links
 
