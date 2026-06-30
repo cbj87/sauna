@@ -61,9 +61,22 @@
 		A10000012FF3000200000005 /* SweatBox/Shared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SweatBox/Shared.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A10000012FF3001000000001 /* Exceptions for "SweatBox" folder in "SweatBox" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 59AE6A5D2FF2F6C60067EA01 /* SweatBox */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		59AE6A602FF2F6C60067EA01 /* SweatBox */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A10000012FF3001000000001 /* Exceptions for "SweatBox" folder in "SweatBox" target */,
+			);
 			path = SweatBox;
 			sourceTree = "<group>";
 		};
