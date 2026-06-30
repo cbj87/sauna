@@ -42,7 +42,79 @@
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone@7.26.4/babel.min.js"></script>
   <style>
-    body { background: #111827; color: #f3f4f6; font-family: system-ui, sans-serif; }
+    :root {
+      --sb-bg: #070707;
+      --sb-bg-warm: #11100f;
+      --sb-panel: #151311;
+      --sb-panel-2: #201a16;
+      --sb-panel-3: #2a211b;
+      --sb-line: rgba(255,255,255,.11);
+      --sb-muted: #a8a29e;
+      --sb-muted-2: #78716c;
+      --sb-muted-3: #57534e;
+      --sb-text: #fafaf9;
+      --sb-orange: #f97316;
+      --sb-amber: #fbbf24;
+    }
+
+    body {
+      background:
+        radial-gradient(circle at 16% 0%, rgba(249,115,22,.22), transparent 34%),
+        radial-gradient(circle at 82% 0%, rgba(251,191,36,.10), transparent 30%),
+        linear-gradient(180deg, #14100d, var(--sb-bg) 38%);
+      color: var(--sb-text);
+      font-family: system-ui, sans-serif;
+    }
+
+    /* Theme Tailwind's default grays into the warmer mockup palette. */
+    .bg-gray-950 { background-color: #050505 !important; }
+    .bg-gray-900 { background-color: var(--sb-bg) !important; }
+    .bg-gray-900\/95 { background-color: rgba(7,7,7,.95) !important; }
+    .bg-gray-900\/90 { background-color: rgba(7,7,7,.90) !important; }
+    .bg-gray-900\/80 { background-color: rgba(7,7,7,.80) !important; }
+    .bg-gray-800 { background-color: var(--sb-panel) !important; }
+    .bg-gray-800\/95 { background-color: rgba(21,19,17,.95) !important; }
+    .bg-gray-800\/90 { background-color: rgba(21,19,17,.90) !important; }
+    .bg-gray-800\/80 { background-color: rgba(21,19,17,.80) !important; }
+    .bg-gray-800\/60 { background-color: rgba(21,19,17,.60) !important; }
+    .bg-gray-750 { background-color: var(--sb-panel-2) !important; }
+    .bg-gray-700 { background-color: var(--sb-panel-2) !important; }
+    .bg-gray-700\/80 { background-color: rgba(32,26,22,.80) !important; }
+    .bg-gray-700\/60 { background-color: rgba(32,26,22,.60) !important; }
+    .bg-gray-700\/50 { background-color: rgba(32,26,22,.50) !important; }
+    .bg-gray-700\/40 { background-color: rgba(32,26,22,.40) !important; }
+    .bg-gray-600 { background-color: var(--sb-panel-3) !important; }
+    .bg-gray-600\/50 { background-color: rgba(42,33,27,.50) !important; }
+    .bg-gray-500 { background-color: #3b3129 !important; }
+
+    .border-gray-900 { border-color: rgba(255,255,255,.06) !important; }
+    .border-gray-800 { border-color: var(--sb-line) !important; }
+    .border-gray-700 { border-color: rgba(255,255,255,.10) !important; }
+    .border-gray-700\/70 { border-color: rgba(255,255,255,.09) !important; }
+    .border-gray-700\/50 { border-color: rgba(255,255,255,.08) !important; }
+    .border-gray-600 { border-color: rgba(255,255,255,.13) !important; }
+    .border-gray-600\/50 { border-color: rgba(255,255,255,.10) !important; }
+
+    .text-gray-200 { color: #e7e5e4 !important; }
+    .text-gray-300 { color: #d6d3d1 !important; }
+    .text-gray-400 { color: var(--sb-muted) !important; }
+    .text-gray-500 { color: var(--sb-muted-2) !important; }
+    .text-gray-600 { color: var(--sb-muted-3) !important; }
+    .text-gray-700 { color: #44403c !important; }
+
+    .hover\:bg-gray-800:hover { background-color: var(--sb-panel-2) !important; }
+    .hover\:bg-gray-700:hover { background-color: #2f261f !important; }
+    .hover\:bg-gray-600:hover { background-color: #3a3028 !important; }
+    .hover\:text-gray-300:hover { color: #e7e5e4 !important; }
+    .hover\:text-gray-200:hover { color: #fafaf9 !important; }
+
+    .min-h-screen.bg-gray-900 {
+      background:
+        radial-gradient(circle at 78% 4%, rgba(249,115,22,.18), transparent 30%),
+        linear-gradient(180deg, #11100f, #070707 58%) !important;
+    }
+
+    .shadow-xl, .shadow-2xl { --tw-shadow-color: rgba(0,0,0,.48); }
     input[type=range] { accent-color: #f97316; }
     /* Strip iOS-imposed intrinsic width so the input respects our layout */
     input[type=time] { -webkit-appearance: none; appearance: none; width: 100%; box-sizing: border-box; }
