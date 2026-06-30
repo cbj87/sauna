@@ -5,71 +5,61 @@ Generate iOS PWA splash screen PNGs for all major iPhone sizes.
 Usage:  python generate_splash.py
 Output: static/splash/splash-{W}x{H}.png  (one per device size)
 
-No external dependencies — uses only Python stdlib (zlib + struct).
-The images are a solid #111827 background (matches the app body colour)
-with a centred orange circle containing the sauna-hut emoji SVG path.
-Because we can't rasterise emoji without a font, we keep it to a clean
-solid dark background — enough to eliminate the iOS white-flash on launch.
+The splash screens use the current PNG app icon centered on a matching
+orange background, so the installed app launch feels continuous.
 """
 
-import os
-import struct
-import zlib
+from pathlib import Path
+import sys
 
-# App background colour (matches `body { background: #111827 }`)
-BG = (17, 24, 39)   # #111827
+try:
+    from PIL import Image
+except ImportError:
+    sys.exit("Pillow is required. Install it with: python -m pip install Pillow")
+
+
+ROOT = Path(__file__).resolve().parent
+ICON = ROOT / "static" / "icon-512.png"
+OUT_DIR = ROOT / "static" / "splash"
+BG = (220, 49, 1)
 
 # (pixel_width, pixel_height, css_device_w, css_device_h, device_pixel_ratio, label)
 SIZES = [
-    (640,  1136, 320, 568, 2, "iPhone SE 1st gen"),
-    (750,  1334, 375, 667, 2, "iPhone 6/7/8 · SE 2nd/3rd gen"),
+    (640, 1136, 320, 568, 2, "iPhone SE 1st gen"),
+    (750, 1334, 375, 667, 2, "iPhone 6/7/8 - SE 2nd/3rd gen"),
     (1242, 2208, 414, 736, 3, "iPhone 6+/7+/8+"),
-    (1125, 2436, 375, 812, 3, "iPhone X · XS · 11 Pro"),
-    (1242, 2688, 414, 896, 3, "iPhone XS Max · 11 Pro Max"),
-    (828,  1792, 414, 896, 2, "iPhone XR · 11"),
-    (1170, 2532, 390, 844, 3, "iPhone 12 · 12 Pro · 13 · 13 Pro · 14"),
-    (1284, 2778, 428, 926, 3, "iPhone 12 Pro Max · 13 Pro Max · 14 Plus"),
-    (1179, 2556, 393, 852, 3, "iPhone 14 Pro · 15 · 15 Pro"),
-    (1290, 2796, 430, 932, 3, "iPhone 14 Pro Max · 15 Plus · 15 Pro Max"),
+    (1125, 2436, 375, 812, 3, "iPhone X - XS - 11 Pro"),
+    (1242, 2688, 414, 896, 3, "iPhone XS Max - 11 Pro Max"),
+    (828, 1792, 414, 896, 2, "iPhone XR - 11"),
+    (1170, 2532, 390, 844, 3, "iPhone 12 - 12 Pro - 13 - 13 Pro - 14"),
+    (1284, 2778, 428, 926, 3, "iPhone 12 Pro Max - 13 Pro Max - 14 Plus"),
+    (1179, 2556, 393, 852, 3, "iPhone 14 Pro - 15 - 15 Pro"),
+    (1290, 2796, 430, 932, 3, "iPhone 14 Pro Max - 15 Plus - 15 Pro Max"),
 ]
 
 
-def png_chunk(chunk_type: bytes, data: bytes) -> bytes:
-    chunk = chunk_type + data
-    return struct.pack(">I", len(data)) + chunk + struct.pack(">I", zlib.crc32(chunk) & 0xFFFFFFFF)
-
-
-def write_solid_png(path: str, width: int, height: int, r: int, g: int, b: int) -> None:
-    """Write a solid-colour RGB PNG using only stdlib."""
-    # PNG signature
-    sig = b"\x89PNG\r\n\x1a\n"
-
-    # IHDR: width, height, bit depth (8), colour type RGB (2), compress (0), filter (0), interlace (0)
-    ihdr = png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
-
-    # One scanline: filter byte 0 + RGB pixels; repeat for all rows
-    scanline = b"\x00" + bytes([r, g, b]) * width
-    raw = scanline * height
-    idat = png_chunk(b"IDAT", zlib.compress(raw, 9))
-
-    iend = png_chunk(b"IEND", b"")
-
-    with open(path, "wb") as f:
-        f.write(sig + ihdr + idat + iend)
-
-
 def main() -> None:
-    out_dir = os.path.join(os.path.dirname(__file__), "static", "splash")
-    os.makedirs(out_dir, exist_ok=True)
+    if not ICON.exists():
+        sys.exit(f"Missing source icon: {ICON}")
 
-    for w, h, *_ , label in SIZES:
-        filename = f"splash-{w}x{h}.png"
-        dest = os.path.join(out_dir, filename)
-        write_solid_png(dest, w, h, *BG)
-        size_kb = os.path.getsize(dest) / 1024
-        print(f"  ✓  {filename:25s}  ({size_kb:.1f} KB)  — {label}")
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    icon = Image.open(ICON).convert("RGBA")
 
-    print(f"\nGenerated {len(SIZES)} splash screens → static/splash/")
+    for width, height, *_, label in SIZES:
+        canvas = Image.new("RGB", (width, height), BG)
+        logo_size = round(min(width * 0.72, height * 0.36))
+        logo = icon.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+        x = round((width - logo_size) / 2)
+        y = round((height * 0.45) - (logo_size / 2))
+        canvas.paste(logo, (x, y), logo)
+
+        filename = f"splash-{width}x{height}.png"
+        dest = OUT_DIR / filename
+        canvas.save(dest, "PNG", optimize=True)
+        size_kb = dest.stat().st_size / 1024
+        print(f"  {filename:25s}  ({size_kb:.1f} KB)  - {label}")
+
+    print(f"\nGenerated {len(SIZES)} splash screens -> static/splash/")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@
   "description": "Family sauna booking & control",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#111827",
+  "background_color": "#dc3101",
   "theme_color": "#f97316",
   "icons": [
     {
@@ -18,12 +18,6 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
-    },
-    {
-      "src": "/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any"
     }
   ]
 }

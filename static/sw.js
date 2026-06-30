@@ -12,7 +12,6 @@ const CACHE_VERSION = 'sweatbox-v7';
 const PRECACHE_URLS = [
   '/',
   '/manifest.json',
-  '/icon.svg',
   '/icon-192.png',
   '/icon-512.png',
 ];
