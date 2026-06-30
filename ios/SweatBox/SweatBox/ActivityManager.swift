@@ -122,11 +122,8 @@ final class ActivityManager {
     }
 
     private func activity(for bookingId: Int?) -> Activity<SaunaActivityAttributes>? {
-        if let currentActivity,
-           bookingId == nil || currentActivity.content.state.bookingId == bookingId {
-            return currentActivity
-        }
-
+        // Prefer a bookingId match when one is available — handles the rare case
+        // of multiple concurrent activities.
         if let bookingId,
            let matching = Activity<SaunaActivityAttributes>.activities.first(where: { $0.content.state.bookingId == bookingId }) {
             currentActivity = matching
@@ -135,7 +132,17 @@ final class ActivityManager {
             return matching
         }
 
-        if bookingId == nil, let first = Activity<SaunaActivityAttributes>.activities.first {
+        // Fall back to the current activity regardless of bookingId. We start at
+        // most one Sauna activity at a time, and start/end calls can disagree on
+        // bookingId (e.g. handleBookNow starts with null because the booking was
+        // just created and its id wasn't captured) — strict matching would
+        // strand the activity, so prefer "the one we know about" over silence.
+        if let currentActivity {
+            return currentActivity
+        }
+
+        // Last resort: adopt any running Sauna activity (post-relaunch case).
+        if let first = Activity<SaunaActivityAttributes>.activities.first {
             currentActivity = first
             lastState = first.content.state
             observePushTokenUpdates(for: first)

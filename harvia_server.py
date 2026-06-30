@@ -2139,6 +2139,12 @@ def _upsert_native_device(db, member: FamilyMember, body: dict) -> NativeDevice 
     if apns_token:
         device.apns_token = apns_token
     device.last_seen_at = datetime.utcnow()
+    # Flush so the parent row lands before any child token rows reference it.
+    # SQLAlchemy's flush ordering wasn't placing the NativeDevice INSERT before
+    # LiveActivityToken / LiveActivityPushToStartToken INSERTs (no `relationship()`
+    # declared between them, only raw ForeignKey), so SQLite's immediate FK check
+    # was failing at commit.
+    db.flush()
     return device
 
 
