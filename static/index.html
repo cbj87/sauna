@@ -119,6 +119,28 @@ const NativeBridge = (() => {
     console.debug('Push-to-start token from native', event.detail);
     uploadNativePayload('/api/native/live-activity/push-to-start-token', event.detail || {});
   });
+  // Forward status events (push-token-failed, started, ended, …) to the server
+  // so we can diagnose why a token never arrived from the device side.
+  window.addEventListener('live-activity-status', event => {
+    console.debug('Live Activity status from native', event.detail);
+    uploadNativePayload('/api/native/live-activity/status', event.detail || {});
+  });
+
+  // Tokens arrive from APNs asynchronously after Activity.request — sometimes
+  // after the webview's listener was attached, sometimes before. Ask native to
+  // re-emit any cached token on page load and whenever the tab becomes visible
+  // again. Idempotent on the server side (token row is upserted).
+  if (isNative) {
+    const repost = () => post('repostLiveActivityTokens');
+    if (document.readyState === 'complete') {
+      repost();
+    } else {
+      window.addEventListener('load', repost, { once: true });
+    }
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') repost();
+    });
+  }
 
   return {
     isNative,

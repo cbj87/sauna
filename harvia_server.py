@@ -2242,6 +2242,31 @@ def native_live_activity_token():
         db.close()
 
 
+@app.route("/api/native/live-activity/status", methods=["POST"])
+def native_live_activity_status():
+    """Logs Live Activity status events forwarded from the iOS bridge.
+
+    Useful for diagnosing why a push token never arrived (e.g. push-token-failed
+    fallback) without needing to attach Safari Web Inspector to the device.
+    """
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        body = request.get_json(silent=True) or {}
+        status = (body.get("status") or "").strip() or "unknown"
+        activity_id = body.get("activityId")
+        booking_id = body.get("bookingId")
+        message = body.get("message")
+        logger.info(
+            "Live Activity status from member_id=%s: status=%s booking_id=%s activity_id=%s message=%s",
+            member.id, status, booking_id, activity_id, message,
+        )
+        return jsonify({"ok": True})
+    finally:
+        db.close()
+
+
 @app.route("/api/native/live-activity/token", methods=["DELETE"])
 def delete_native_live_activity_token():
     db, member, error = require_auth()

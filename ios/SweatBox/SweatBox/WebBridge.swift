@@ -74,6 +74,10 @@ final class WebBridge: NSObject, ObservableObject, WKScriptMessageHandler {
         }
     }
 
+    func repostCachedTokens() {
+        activityManager.repostCachedTokens()
+    }
+
     func dispatchLiveActivityToken(_ payload: LiveActivityTokenPayload) {
         dispatchNativeEvent(name: "live-activity-token", payload: payload)
     }

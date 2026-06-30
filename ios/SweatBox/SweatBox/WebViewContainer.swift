@@ -12,6 +12,7 @@ struct WebViewContainer: UIViewRepresentable {
     func makeCoordinator() -> Coordinator {
         Coordinator(
             allowedHost: allowedHost,
+            bridge: bridge,
             onExternalURL: onExternalURL,
             onLoadFinished: onLoadFinished
         )
@@ -48,16 +49,19 @@ struct WebViewContainer: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         let allowedHost: String
+        weak var bridge: WebBridge?
         let onExternalURL: (URL) -> Void
         let onLoadFinished: () -> Void
         private var hasFinishedFirstLoad = false
 
         init(
             allowedHost: String,
+            bridge: WebBridge,
             onExternalURL: @escaping (URL) -> Void,
             onLoadFinished: @escaping () -> Void
         ) {
             self.allowedHost = allowedHost
+            self.bridge = bridge
             self.onExternalURL = onExternalURL
             self.onLoadFinished = onLoadFinished
         }
@@ -67,6 +71,11 @@ struct WebViewContainer: UIViewRepresentable {
                 hasFinishedFirstLoad = true
                 onLoadFinished()
             }
+            // Replay any cached Live Activity / push-to-start tokens. The page
+            // may have reloaded after the original token arrived from APNs, in
+            // which case the JS listener missed the dispatch — repost here so
+            // the freshly-loaded listeners can upload them to the server.
+            bridge?.repostCachedTokens()
         }
 
         // If WebContent crashes (low memory, etc.) reload so the user
