@@ -75,45 +75,45 @@ private struct LockScreenLiveActivityView: View {
     let state: SaunaActivityAttributes.ContentState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(state.bookingName)
-                        .font(.system(size: 24, weight: .heavy, design: .rounded))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                    Text(state.heatOn ? "Sauna heating" : "Sauna off")
-                        .font(.system(size: 16, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.48))
-                }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center) {
+                Text(state.bookingName)
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.94))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .allowsTightening(true)
 
                 Spacer()
 
                 Image(systemName: state.heatOn ? "flame.fill" : "power")
-                    .font(.system(size: 32, weight: .bold))
+                    .font(.system(size: 20, weight: .bold))
                     .foregroundStyle(state.heatOn ? heatGradient : LinearGradient(colors: [.white.opacity(0.5)], startPoint: .top, endPoint: .bottom))
-                    .shadow(color: state.heatOn ? ember : .clear, radius: 16)
-                    .padding(.top, 2)
+                    .shadow(color: state.heatOn ? ember.opacity(0.7) : .clear, radius: 10)
             }
 
-            HStack(alignment: .center, spacing: 22) {
+            HStack(alignment: .center, spacing: 16) {
                 MetricView(title: "Current", value: temperatureText(state.currentTempF), alignment: .center)
                     .frame(maxWidth: .infinity)
 
                 DividerLine()
 
-                VStack(spacing: -2) {
+                VStack(spacing: 0) {
                     Text(remainingText(state))
-                        .font(.system(size: 70, weight: .heavy, design: .rounded))
+                        .font(.system(size: 45, weight: .heavy, design: .rounded))
                         .foregroundStyle(heatGradient)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.45)
-                        .shadow(color: ember.opacity(0.65), radius: 18)
+                        .minimumScaleFactor(0.6)
+                        .allowsTightening(true)
+                        .shadow(color: ember.opacity(0.38), radius: 10)
                     Text("Remaining")
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.7))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.58))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .allowsTightening(true)
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, minHeight: 58)
 
                 DividerLine()
 
@@ -122,31 +122,48 @@ private struct LockScreenLiveActivityView: View {
             }
 
             ProgressBar(progress: heatingProgress(state))
-                .frame(height: 9)
+                .frame(height: 5)
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 30)
+        .padding(.top, 16)
+        .padding(.bottom, 12)
         .foregroundStyle(.white)
-        .background {
+        .containerBackground(for: .widget) {
             ZStack {
-                RoundedRectangle(cornerRadius: 34, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.12, green: 0.12, blue: 0.12),
-                                Color(red: 0.03, green: 0.04, blue: 0.05)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                RoundedRectangle(cornerRadius: 34, style: .continuous)
-                    .strokeBorder(.white.opacity(0.22), lineWidth: 1)
+                LinearGradient(
+                    colors: [
+                        Color(red: 0.12, green: 0.12, blue: 0.12),
+                        Color(red: 0.03, green: 0.04, blue: 0.05)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
                 RadialGradient(
-                    colors: [ember.opacity(0.24), .clear],
+                    colors: [ember.opacity(0.13), .clear],
                     center: .center,
                     startRadius: 6,
                     endRadius: 180
+                )
+                .blendMode(.screen)
+                RadialGradient(
+                    colors: [
+                        Color(red: 1.0, green: 0.65, blue: 0.25).opacity(0.12),
+                        .clear
+                    ],
+                    center: .topTrailing,
+                    startRadius: 4,
+                    endRadius: 130
+                )
+                .blendMode(.screen)
+            }
+        }
+        .background {
+            ZStack {
+                RadialGradient(
+                    colors: [ember.opacity(0.08), .clear],
+                    center: .center,
+                    startRadius: 6,
+                    endRadius: 150
                 )
                 .blendMode(.screen)
             }
@@ -162,12 +179,14 @@ private struct MetricView: View {
     var body: some View {
         VStack(alignment: alignment, spacing: 4) {
             Text(value)
-                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .font(.system(size: 26, weight: .bold, design: .rounded))
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
+                .allowsTightening(true)
             Text(title)
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white.opacity(0.48))
+                .lineLimit(1)
         }
     }
 }
@@ -176,7 +195,7 @@ private struct DividerLine: View {
     var body: some View {
         Rectangle()
             .fill(.white.opacity(0.18))
-            .frame(width: 1, height: 64)
+            .frame(width: 1, height: 42)
     }
 }
 
