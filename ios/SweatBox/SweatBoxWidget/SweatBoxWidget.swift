@@ -13,7 +13,7 @@ struct SweatBoxLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: SaunaActivityAttributes.self) { context in
             LockScreenLiveActivityView(state: context.state)
-                .activityBackgroundTint(Color(red: 0.08, green: 0.10, blue: 0.14))
+                .activityBackgroundTint(.black)
                 .activitySystemActionForegroundColor(.orange)
         } dynamicIsland: { context in
             DynamicIsland {
@@ -29,30 +29,42 @@ struct SweatBoxLiveActivityWidget: Widget {
                 }
 
                 DynamicIslandExpandedRegion(.trailing) {
-                    TemperatureStack(state: context.state)
+                    VStack(alignment: .trailing, spacing: 3) {
+                        Text(remainingText(context.state))
+                            .font(.title3.weight(.heavy))
+                            .foregroundStyle(heatGradient)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                        Text("Remaining")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 DynamicIslandExpandedRegion(.bottom) {
-                    HStack {
-                        Label(remainingText(context.state), systemImage: "timer")
-                        Spacer()
-                        if let targetTempF = context.state.targetTempF {
-                            Text("Target \(targetTempF)°")
+                    VStack(spacing: 8) {
+                        HStack {
+                            MetricView(title: "Current", value: temperatureText(context.state.currentTempF), alignment: .leading)
+                            Spacer()
+                            if let targetTempF = context.state.targetTempF {
+                                MetricView(title: "Target", value: "\(targetTempF)°", alignment: .trailing)
+                            }
                         }
+                        ProgressBar(progress: heatingProgress(context.state))
+                            .frame(height: 5)
                     }
                     .font(.caption)
-                    .foregroundStyle(.secondary)
                 }
             } compactLeading: {
                 Image(systemName: context.state.heatOn ? "flame.fill" : "power")
-                    .foregroundStyle(context.state.heatOn ? .orange : .secondary)
+                    .foregroundStyle(context.state.heatOn ? heatGradient : LinearGradient(colors: [.secondary], startPoint: .top, endPoint: .bottom))
             } compactTrailing: {
                 Text(compactText(context.state))
                     .font(.caption2.weight(.semibold))
                     .minimumScaleFactor(0.75)
             } minimal: {
                 Image(systemName: context.state.heatOn ? "flame.fill" : "power")
-                    .foregroundStyle(context.state.heatOn ? .orange : .secondary)
+                    .foregroundStyle(context.state.heatOn ? heatGradient : LinearGradient(colors: [.secondary], startPoint: .top, endPoint: .bottom))
             }
             .widgetURL(URL(string: "sweatbox://open?tab=controls"))
         }
@@ -63,63 +75,152 @@ private struct LockScreenLiveActivityView: View {
     let state: SaunaActivityAttributes.ContentState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text(state.bookingName)
-                        .font(.headline)
+                        .font(.system(size: 24, weight: .heavy, design: .rounded))
                         .lineLimit(1)
+                        .minimumScaleFactor(0.72)
                     Text(state.heatOn ? "Sauna heating" : "Sauna off")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.48))
                 }
 
                 Spacer()
 
                 Image(systemName: state.heatOn ? "flame.fill" : "power")
-                    .font(.title3)
-                    .foregroundStyle(state.heatOn ? .orange : .secondary)
+                    .font(.system(size: 32, weight: .bold))
+                    .foregroundStyle(state.heatOn ? heatGradient : LinearGradient(colors: [.white.opacity(0.5)], startPoint: .top, endPoint: .bottom))
+                    .shadow(color: state.heatOn ? ember : .clear, radius: 16)
+                    .padding(.top, 2)
             }
 
-            HStack(spacing: 18) {
-                TemperatureStack(state: state)
-                MetricView(title: "Remaining", value: remainingText(state))
-                if let targetTempF = state.targetTempF {
-                    MetricView(title: "Target", value: "\(targetTempF)°")
+            HStack(alignment: .center, spacing: 22) {
+                MetricView(title: "Current", value: temperatureText(state.currentTempF), alignment: .center)
+                    .frame(maxWidth: .infinity)
+
+                DividerLine()
+
+                VStack(spacing: -2) {
+                    Text(remainingText(state))
+                        .font(.system(size: 70, weight: .heavy, design: .rounded))
+                        .foregroundStyle(heatGradient)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.45)
+                        .shadow(color: ember.opacity(0.65), radius: 18)
+                    Text("Remaining")
+                        .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.7))
                 }
+                .frame(maxWidth: .infinity)
+
+                DividerLine()
+
+                MetricView(title: "Target", value: temperatureText(state.targetTempF), alignment: .center)
+                    .frame(maxWidth: .infinity)
+            }
+
+            ProgressBar(progress: heatingProgress(state))
+                .frame(height: 9)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 18)
+        .foregroundStyle(.white)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.12, green: 0.12, blue: 0.12),
+                                Color(red: 0.03, green: 0.04, blue: 0.05)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                    .strokeBorder(.white.opacity(0.22), lineWidth: 1)
+                RadialGradient(
+                    colors: [ember.opacity(0.24), .clear],
+                    center: .center,
+                    startRadius: 6,
+                    endRadius: 180
+                )
+                .blendMode(.screen)
             }
         }
-        .padding()
-        .foregroundStyle(.white)
-    }
-}
-
-private struct TemperatureStack: View {
-    let state: SaunaActivityAttributes.ContentState
-
-    var body: some View {
-        MetricView(
-            title: "Current",
-            value: state.currentTempF.map { "\($0)°" } ?? "--"
-        )
     }
 }
 
 private struct MetricView: View {
     let title: String
     let value: String
+    let alignment: HorizontalAlignment
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: alignment, spacing: 4) {
             Text(value)
-                .font(.title3.weight(.bold))
+                .font(.system(size: 36, weight: .bold, design: .rounded))
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .minimumScaleFactor(0.55)
             Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.48))
         }
     }
+}
+
+private struct DividerLine: View {
+    var body: some View {
+        Rectangle()
+            .fill(.white.opacity(0.18))
+            .frame(width: 1, height: 64)
+    }
+}
+
+private struct ProgressBar: View {
+    let progress: Double
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(.white.opacity(0.12))
+                Capsule()
+                    .fill(heatGradient)
+                    .frame(width: max(proxy.size.height, proxy.size.width * progress))
+                    .shadow(color: ember.opacity(0.8), radius: 10)
+            }
+        }
+    }
+}
+
+private let ember = Color(red: 1.0, green: 0.32, blue: 0.02)
+private let heatGradient = LinearGradient(
+    colors: [
+        Color(red: 1.0, green: 0.33, blue: 0.06),
+        Color(red: 1.0, green: 0.67, blue: 0.12)
+    ],
+    startPoint: .leading,
+    endPoint: .trailing
+)
+
+private func temperatureText(_ temp: Int?) -> String {
+    temp.map { "\($0)°" } ?? "--"
+}
+
+private func heatingProgress(_ state: SaunaActivityAttributes.ContentState) -> Double {
+    guard
+        let currentTempF = state.currentTempF,
+        let targetTempF = state.targetTempF,
+        targetTempF > 0
+    else {
+        return state.heatOn ? 0.12 : 0
+    }
+
+    return min(1, max(0.04, Double(currentTempF) / Double(targetTempF)))
 }
 
 private func remainingText(_ state: SaunaActivityAttributes.ContentState) -> String {
@@ -128,6 +229,6 @@ private func remainingText(_ state: SaunaActivityAttributes.ContentState) -> Str
 }
 
 private func compactText(_ state: SaunaActivityAttributes.ContentState) -> String {
-    let temp = state.currentTempF.map { "\($0)°" } ?? "--"
+    let temp = temperatureText(state.currentTempF)
     return "\(temp) · \(remainingText(state))"
 }
