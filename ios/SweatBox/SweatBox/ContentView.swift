@@ -39,13 +39,13 @@ private struct IdentifiableURL: Identifiable {
 private struct SplashView: View {
     var body: some View {
         ZStack {
-            Color(.systemBackground).ignoresSafeArea()
-            VStack(spacing: 14) {
-                Text("Sweat Box")
-                    .font(.largeTitle.bold())
-                ProgressView()
-                    .progressViewStyle(.circular)
-            }
+            // Same color as Info.plist's UILaunchScreen → seamless from cold launch.
+            Color("LaunchBackground").ignoresSafeArea()
+            Image("AppLogo")
+                .resizable()
+                .interpolation(.high)
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 120, height: 120)
         }
     }
 }
