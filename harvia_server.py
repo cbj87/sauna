@@ -257,8 +257,32 @@ def _apns_jwt() -> str:
     return token
 
 
+_apns_http_client: "httpx.Client | None" = None
+_apns_http_client_lock = threading.Lock()
+
+
+def _get_apns_http_client():
+    """Return a cached httpx.Client with HTTP/2 enabled.
+
+    APNs requires HTTP/2 — Python's urllib only speaks HTTP/1.1, so requests
+    bounce off Apple's frontend with garbled binary errors. httpx[http2] +
+    the `h2` package give us HTTP/2 and connection reuse across pushes.
+    """
+    global _apns_http_client
+    if _apns_http_client is not None:
+        return _apns_http_client
+    with _apns_http_client_lock:
+        if _apns_http_client is None:
+            import httpx
+            _apns_http_client = httpx.Client(
+                http2=True,
+                timeout=httpx.Timeout(10.0, connect=5.0),
+            )
+        return _apns_http_client
+
+
 def _send_live_activity_apns(token: str, payload: dict) -> tuple[bool, int | None, str | None]:
-    """Send one ActivityKit APNs payload.
+    """Send one ActivityKit APNs payload over HTTP/2.
 
     Returns (ok, status_code, response_body). Missing APNs config is a soft failure.
     """
@@ -267,27 +291,22 @@ def _send_live_activity_apns(token: str, payload: dict) -> tuple[bool, int | Non
 
     host = "api.sandbox.push.apple.com" if APNS_USE_SANDBOX else "api.push.apple.com"
     url = f"https://{host}/3/device/{token}"
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload, separators=(",", ":")).encode(),
-        headers={
-            "authorization": f"bearer {_apns_jwt()}",
-            "apns-topic": f"{APNS_BUNDLE_ID}.push-type.liveactivity",
-            "apns-push-type": "liveactivity",
-            "apns-priority": "10",
-            "content-type": "application/json",
-            "user-agent": "SweatBox/1.0",
-        },
-        method="POST",
-    )
+    headers = {
+        "authorization": f"bearer {_apns_jwt()}",
+        "apns-topic": f"{APNS_BUNDLE_ID}.push-type.liveactivity",
+        "apns-push-type": "liveactivity",
+        "apns-priority": "10",
+        "content-type": "application/json",
+        "user-agent": "SweatBox/1.0",
+    }
+    body_bytes = json.dumps(payload, separators=(",", ":")).encode()
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            body = resp.read().decode(errors="replace")
-            return 200 <= resp.status < 300, resp.status, body
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode(errors="replace")
-        logger.warning("Live Activity APNs HTTP error %s: %s", exc.code, body)
-        return False, exc.code, body
+        resp = _get_apns_http_client().post(url, content=body_bytes, headers=headers)
+        body = resp.text
+        ok = 200 <= resp.status_code < 300
+        if not ok:
+            logger.warning("Live Activity APNs HTTP error %s: %s", resp.status_code, body)
+        return ok, resp.status_code, body
     except Exception as exc:
         logger.error("Live Activity APNs send failed: %s", exc)
         return False, None, str(exc)
@@ -978,7 +997,7 @@ def push_live_activity_updates():
             status = None
             if harvia:
                 try:
-                    status = status_with_f(harvia.get_status())
+                    status = status_with_f(harvia.get_full_status())
                 except Exception as exc:
                     logger.warning("Live Activity update: Harvia status fetch failed: %s", exc)
             content_state = _live_activity_payload_for_booking(booking, status)
