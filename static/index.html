@@ -597,6 +597,60 @@ function todayBookingsFor(bookings) {
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
 }
 
+function TodaySessionList({ bookings, onOpenSchedule, onPress, onPreheat, loading }) {
+  if (loading) {
+    return (
+      <div className="space-y-3">
+        <Skeleton className="h-20 rounded-2xl" />
+        <Skeleton className="h-20 rounded-2xl" />
+      </div>
+    );
+  }
+
+  if (bookings.length === 0) {
+    return (
+      <div className="rounded-2xl border border-white/10 bg-gray-800/80 px-4 py-5 text-center">
+        <div className="text-sm font-bold text-white">No sessions booked yet</div>
+        <button onClick={onOpenSchedule} className="mt-2 text-xs font-bold text-orange-400 hover:text-orange-300">Book a session</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {bookings.map(b => {
+        const minsUntil = (new Date(`${b.date}T${b.start_time}`) - new Date()) / 60000;
+        const canPreheat = b.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0;
+        const timeLabel = b.status === 'active' ? 'Now' : fmtTime(b.start_time).replace(' PM', '').replace(' AM', '');
+        const statusLabel = b.status === 'active' ? 'Active' : b.status === 'preheating' ? 'Heating' : b.status === 'completed' ? 'Done' : 'Later';
+        const statusCls = b.status === 'active' || b.status === 'preheating'
+          ? 'bg-orange-500/15 text-orange-200'
+          : 'bg-white/10 text-gray-300';
+        return (
+          <button key={b.id} onClick={() => onPress(b)}
+            className={`grid w-full grid-cols-[4.5rem_1fr_auto] items-center gap-3 rounded-2xl border px-4 py-4 text-left transition-colors ${b.status === 'active' ? 'border-orange-500/60 bg-orange-500/10' : 'border-white/10 bg-gray-800/80 hover:bg-gray-700/60'}`}>
+            <div className="text-base font-black text-gray-200">{timeLabel}</div>
+            <div className="min-w-0">
+              <div className="truncate text-base font-black text-white">{b.member_name}'s session</div>
+              <div className="mt-0.5 truncate text-sm font-semibold text-gray-400">
+                {fmtTime(b.start_time)} - {fmtTime(b.end_time)}{b.end_time < b.start_time ? ' next day' : ''}
+              </div>
+            </div>
+            {canPreheat ? (
+              <span onClick={e => { e.stopPropagation(); onPreheat(b.id); }}
+                className="rounded-full bg-orange-500 px-3 py-2 text-xs font-black text-white">
+                Preheat
+              </span>
+            ) : (
+              <span className={`rounded-full px-3 py-2 text-xs font-black ${statusCls}`}>{statusLabel}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function HomePanel({
   status, statusUpdatedAt, bookings, members, presets, currentMember, onRefresh, onBook,
   toast, tempF, setTempF, duration, setDuration, manuallySet, setManuallySet,
@@ -687,22 +741,22 @@ function HomePanel({
     }
   }
 
-  async function handlePreset(name) {
+  async function handleExtendAppTime() {
+    if (!activeBooking?.id) {
+      toast('No active session to extend', 'error');
+      return;
+    }
     setBusy(true);
     try {
-      await api(`/api/sauna/preset/${name}`, { method: 'POST' });
-      const p = presets.find(x => x.name === name);
-      NativeBridge.startSaunaSession({
+      const result = await api(`/api/bookings/${activeBooking.id}/extend`, { method: 'POST', body: { minutes: 15 } });
+      toast('+15 minutes added', 'success');
+      if (onBook) await onBook();
+      const newRemaining = result?.booking?.end_time ? remainingForStatus({ active: 1 }, result.booking) : (remaining ?? 0) + 15;
+      NativeBridge.updateSaunaSession({
         ...nativePayload(),
-        bookingName: p?.label || name,
-        targetTempF: p?.target_temp != null ? cToF(p.target_temp) : targetTempF,
-        remainingMinutes: p?.on_time ?? duration,
-        heatOn: true,
-        active: true,
+        remainingMinutes: newRemaining,
         updatedAtMillis: Date.now(),
       });
-      toast(`${p?.label || name} started!`, 'success');
-      setTimeout(onRefresh, 1500);
     } catch(e) {
       toast(e.message, 'error');
     } finally {
@@ -766,26 +820,19 @@ function HomePanel({
 
         <div className="relative mt-5 grid grid-cols-[1fr_auto_auto] gap-2">
           <button onClick={handlePrimary} disabled={busy}
-            className={`rounded-2xl py-3.5 text-base font-black shadow-xl transition-all disabled:opacity-60 ${saunaOn ? 'bg-red-700 text-white hover:bg-red-600' : 'bg-orange-500 text-white hover:bg-orange-400'}`}>
+            className="rounded-2xl bg-orange-500 py-3.5 text-base font-black text-black shadow-xl transition-all hover:bg-orange-400 disabled:opacity-60">
             {busy ? '…' : saunaOn ? 'Turn off' : currentMember?.is_admin ? 'Turn on' : 'Book & start'}
           </button>
-          <button onClick={() => onOpenSchedule?.()} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-gray-200 hover:bg-white/15">Book</button>
+          {saunaOn ? (
+            <button onClick={handleExtendAppTime} disabled={busy || !activeBooking}
+              className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-black text-gray-200 hover:bg-white/15 disabled:opacity-40">
+              +15
+            </button>
+          ) : (
+            <button onClick={() => onOpenSchedule?.()} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-gray-200 hover:bg-white/15">Book</button>
+          )}
           <button onClick={() => onOpenMore?.()} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-gray-200 hover:bg-white/15">More</button>
         </div>
-
-        {presets.length > 0 && !saunaOn && (
-          <div className="relative mt-4 flex gap-2 overflow-x-auto pb-1">
-            {presets.slice(0, 4).map(p => {
-              const overLimit = myMaxTempC && p.target_temp > myMaxTempC;
-              return (
-                <button key={p.name} onClick={() => handlePreset(p.name)} disabled={busy || overLimit}
-                  className="flex-shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-left text-xs font-bold text-gray-200 disabled:opacity-40">
-                  {p.label}<span className="ml-1 text-gray-500">{p.target_temp_f}°</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
       </section>
 
       <section>
@@ -796,15 +843,10 @@ function HomePanel({
           </div>
           <button onClick={onOpenSchedule} className="text-xs font-bold text-orange-400 hover:text-orange-300">Full schedule</button>
         </div>
-        <DayRow
-          date={todayIso}
+        <TodaySessionList
           bookings={todaysBookings}
-          members={members}
-          expanded={true}
-          onToggle={() => {}}
-          onSlotClick={onSlotClick}
-          onEmptyClick={t => onEmptyClick(t, todayIso)}
-          onCardPress={onSlotClick}
+          onOpenSchedule={onOpenSchedule}
+          onPress={onSlotClick}
           onPreheat={onPreheat}
           loading={loadingBookings}
         />
@@ -933,15 +975,17 @@ function SettingsPanel({
 }) {
   const isSubscribed = notifState === 'subscribed';
   const ToggleRow = ({ title, subtitle, checked, onChange, disabled }) => (
-    <div className="flex items-center justify-between gap-4 border-t border-gray-700/70 px-4 py-4 first:border-t-0">
+    <div className="grid grid-cols-[1fr_5rem] items-center gap-4 border-t border-gray-700/70 px-4 py-4 first:border-t-0">
       <div>
         <div className="text-sm font-semibold text-white">{title}</div>
         <div className="mt-0.5 text-xs text-gray-500">{subtitle}</div>
       </div>
-      <button onClick={() => !disabled && onChange(!checked)} disabled={disabled}
-        className={`relative h-7 w-12 rounded-full transition-colors disabled:opacity-40 ${checked ? 'bg-orange-500' : 'bg-gray-600'}`}>
-        <span className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-transform ${checked ? 'translate-x-5' : 'translate-x-1'}`} />
-      </button>
+      <div className="flex justify-end">
+        <button onClick={() => !disabled && onChange(!checked)} disabled={disabled}
+          className={`relative h-7 w-12 rounded-full transition-colors disabled:opacity-40 ${checked ? 'bg-orange-500' : 'bg-gray-600'}`}>
+          <span className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-transform ${checked ? 'translate-x-5' : 'translate-x-1'}`} />
+        </button>
+      </div>
     </div>
   );
 
@@ -953,17 +997,19 @@ function SettingsPanel({
       </div>
 
       <div className="overflow-hidden rounded-2xl bg-gray-800">
-        <div className="flex items-center justify-between gap-4 px-4 py-4">
+        <div className="grid grid-cols-[1fr_5rem] items-center gap-4 px-4 py-4">
           <div>
             <div className="text-sm font-semibold text-white">Notifications</div>
             <div className="mt-0.5 text-xs text-gray-500">
               {notifState === 'unsupported' ? 'Not supported on this device' : isSubscribed ? 'Enabled on this device' : 'Preheat and session alerts'}
             </div>
           </div>
-          <button onClick={onOpenNotifications} disabled={!vapidKey || notifLoading}
-            className="rounded-xl bg-orange-500/15 px-3 py-2 text-xs font-bold text-orange-300 disabled:opacity-40">
-            {isSubscribed ? 'Manage' : 'Enable'}
-          </button>
+          <div className="flex justify-end">
+            <button onClick={onOpenNotifications} disabled={!vapidKey || notifLoading}
+              className="w-20 rounded-xl bg-orange-500/15 px-3 py-2 text-center text-xs font-bold text-orange-300 disabled:opacity-40">
+              {isSubscribed ? 'Manage' : 'Enable'}
+            </button>
+          </div>
         </div>
         <ToggleRow title="Preheat reminders" subtitle="35 min before your session starts" checked={notifPrefs.preheat !== false} onChange={v => onPrefChange('preheat', v)} disabled={!isSubscribed} />
         <ToggleRow title="Session ending soon" subtitle="15 min before your session ends" checked={notifPrefs.session_ending !== false} onChange={v => onPrefChange('session_ending', v)} disabled={!isSubscribed} />

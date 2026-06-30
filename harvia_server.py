@@ -1786,6 +1786,84 @@ def sauna_extend():
         return err(str(exc), 502)
 
 
+@app.route("/api/bookings/<int:booking_id>/extend", methods=["POST"])
+def extend_booking_time(booking_id: int):
+    """Extend the app's booking window without touching the Harvia timer."""
+    db_auth, member, error = require_auth()
+    if error:
+        return error
+    db_auth.close()
+
+    body = request.get_json(silent=True) or {}
+    try:
+        add_minutes = max(1, min(30, int(body.get("minutes", 15))))
+    except (TypeError, ValueError):
+        add_minutes = 15
+
+    def booking_bounds(b: Booking):
+        start_dt = datetime.combine(b.date, b.start_time)
+        end_date = b.date + timedelta(days=1) if b.end_time <= b.start_time else b.date
+        end_dt = datetime.combine(end_date, b.end_time)
+        return start_dt, end_dt
+
+    db = SessionLocal()
+    try:
+        booking = db.query(Booking).filter_by(id=booking_id).first()
+        if not booking:
+            return err("Booking not found", 404)
+        if booking.member_id != member.id and not member.is_admin:
+            return err("Cannot extend someone else's session", 403)
+        if booking.status not in ("scheduled", "preheating", "active"):
+            return err(f"Cannot extend a booking with status '{booking.status}'")
+
+        start_dt, end_dt = booking_bounds(booking)
+        now = app_now().replace(tzinfo=None)
+        if end_dt <= now:
+            return err("Cannot extend a session that has already ended")
+
+        new_end_dt = end_dt + timedelta(minutes=add_minutes)
+        new_end_time = new_end_dt.time().replace(second=0, microsecond=0)
+        check_start = start_dt - timedelta(minutes=COOLDOWN_MINUTES)
+        check_end = new_end_dt + timedelta(minutes=COOLDOWN_MINUTES)
+
+        nearby = (
+            db.query(Booking)
+            .filter(
+                Booking.id != booking.id,
+                Booking.status != "cancelled",
+                Booking.date >= booking.date - timedelta(days=1),
+                Booking.date <= booking.date + timedelta(days=1),
+            )
+            .all()
+        )
+        for other in nearby:
+            other_start, other_end = booking_bounds(other)
+            other_start -= timedelta(minutes=COOLDOWN_MINUTES)
+            other_end += timedelta(minutes=COOLDOWN_MINUTES)
+            if check_start < other_end and check_end > other_start:
+                return err(
+                    f"Extension would overlap with {other.member.name if other.member else 'another booking'} "
+                    f"({other.start_time.strftime('%H:%M')}–{other.end_time.strftime('%H:%M')})"
+                )
+
+        booking.end_time = new_end_time
+        booking.on_time = int((new_end_dt - start_dt).total_seconds() / 60)
+        db.commit()
+        db.refresh(booking)
+
+        _log_sauna_action(
+            member.id,
+            member.name,
+            "extend",
+            target_temp=booking.target_temp,
+            on_time=booking.on_time,
+            notes=json.dumps({"added_mins": add_minutes, "booking_only": True}),
+        )
+        return jsonify({"ok": True, "addedMinutes": add_minutes, "booking": booking.to_dict()})
+    finally:
+        db.close()
+
+
 @app.route("/api/sauna/set", methods=["POST"])
 def sauna_set():
     """Update sauna settings mid-session.
