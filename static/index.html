@@ -490,6 +490,453 @@ function DayRow({ date, bookings, members, expanded, onToggle, onSlotClick, onEm
   );
 }
 
+function activeBookingForNow(bookings, saunaOn) {
+  if (!saunaOn) return null;
+  const now = new Date();
+  const todayIso = localDate(now);
+  return bookings.find(b => {
+    if (b.date !== todayIso) return false;
+    if (b.status === 'cancelled' || b.status === 'completed') return false;
+    const start = new Date(`${b.date}T${b.start_time}`);
+    const end = new Date(`${b.date}T${b.end_time}`);
+    return start <= now && end > now;
+  }) ?? bookings.find(b =>
+    b.date === todayIso && (b.status === 'active' || b.status === 'preheating')
+  ) ?? null;
+}
+
+function remainingForStatus(status, activeBooking) {
+  if (status?.active === 1 && activeBooking?.end_time) {
+    const [h, m] = activeBooking.end_time.split(':').map(Number);
+    const now = new Date();
+    const end = new Date(now);
+    end.setHours(h, m, 0, 0);
+    let diff = Math.round((end - now) / 60000);
+    if (diff < 0) diff += 24 * 60;
+    return diff;
+  }
+  return status?.remainingTime ?? null;
+}
+
+function todayBookingsFor(bookings) {
+  const todayIso = localDate(new Date());
+  return bookings
+    .filter(b => b.date === todayIso && b.status !== 'cancelled')
+    .sort((a, b) => a.start_time.localeCompare(b.start_time));
+}
+
+function HomePanel({
+  status, statusUpdatedAt, bookings, members, presets, currentMember, onRefresh, onBook,
+  toast, tempF, setTempF, duration, setDuration, manuallySet, setManuallySet,
+  onOpenSchedule, onOpenMore, onSlotClick, onEmptyClick, onPreheat, loadingBookings,
+}) {
+  const [busy, setBusy] = useState(false);
+  const now = new Date();
+  const todayIso = localDate(now);
+  const saunaOn = status?.active === 1;
+  const activeBooking = activeBookingForNow(bookings, saunaOn);
+  const currentTempF = status?.temperatureF ?? cToF(status?.temperature);
+  const targetTempF = status?.targetTempF ?? cToF(status?.targetTemp);
+  const remaining = remainingForStatus(status, activeBooking);
+  const todaysBookings = todayBookingsFor(bookings);
+  const myProfile = members.find(m => m.id === currentMember?.id);
+  const myMaxTempC = myProfile?.max_temp ?? currentMember?.max_temp ?? null;
+  const myMaxTempF = myMaxTempC ? cToF(myMaxTempC) : 230;
+  const seedTemp = myProfile?.default_temp ?? currentMember?.default_temp ?? 90;
+  const seedDur = myProfile?.default_time ?? currentMember?.default_time ?? 60;
+  const effectiveTempF = Math.min(tempF, myMaxTempF);
+  const minsAgo = statusUpdatedAt ? Math.floor((Date.now() - statusUpdatedAt.getTime()) / 60000) : null;
+  const updatedLabel = minsAgo === null ? 'Tap to load status'
+    : minsAgo === 0 ? 'Just updated'
+    : `Updated ${minsAgo} min ago`;
+
+  useEffect(() => {
+    if (manuallySet) return;
+    if (myProfile) {
+      setTempF(cToF(myProfile.default_temp));
+      setDuration(myProfile.default_time);
+    }
+  }, [myProfile?.default_temp, myProfile?.default_time]);
+
+  const nativePayload = () => ({
+    bookingId: activeBooking?.id ?? null,
+    memberId: activeBooking?.member_id ?? currentMember?.id ?? null,
+    bookingName: activeBooking?.member_name ? `${activeBooking.member_name}'s Session` : `${currentMember?.name || 'Sauna'}'s Session`,
+    currentTempF,
+    targetTempF: targetTempF ?? effectiveTempF,
+    remainingMinutes: remaining ?? duration,
+    heatOn: saunaOn,
+    active: saunaOn,
+    updatedAtMillis: Date.now(),
+  });
+
+  async function handlePrimary() {
+    setBusy(true);
+    try {
+      if (saunaOn) {
+        await api('/api/sauna/off', { method: 'POST' });
+        NativeBridge.endSaunaSession({
+          bookingId: activeBooking?.id ?? null,
+          reason: 'manual-off',
+          updatedAtMillis: Date.now(),
+        });
+        toast('Sauna turned off', 'info');
+      } else {
+        const tempToUse = currentMember?.is_admin ? fToC(effectiveTempF) : (myMaxTempC ? Math.min(seedTemp, myMaxTempC) : seedTemp);
+        const durationToUse = currentMember?.is_admin ? duration : seedDur;
+        if (!currentMember?.is_admin) {
+          const startDate = new Date();
+          const endDate = new Date(startDate.getTime() + durationToUse * 60000);
+          await api('/api/bookings', { method: 'POST', body: {
+            date: todayIso,
+            start_time: timeStr(startDate),
+            end_time: timeStr(endDate),
+            target_temp: tempToUse,
+            on_time: durationToUse,
+          }});
+          if (onBook) onBook();
+        }
+        await api('/api/sauna/on', { method: 'POST', body: { targetTempF: cToF(tempToUse), onTime: durationToUse } });
+        NativeBridge.startSaunaSession({
+          ...nativePayload(),
+          targetTempF: cToF(tempToUse),
+          remainingMinutes: durationToUse,
+          heatOn: true,
+          active: true,
+          updatedAtMillis: Date.now(),
+        });
+        toast(currentMember?.is_admin ? 'Sauna is heating up!' : 'Session booked and sauna is heating!', 'success');
+      }
+      setTimeout(onRefresh, 1500);
+    } catch(e) {
+      toast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handlePreset(name) {
+    setBusy(true);
+    try {
+      await api(`/api/sauna/preset/${name}`, { method: 'POST' });
+      const p = presets.find(x => x.name === name);
+      NativeBridge.startSaunaSession({
+        ...nativePayload(),
+        bookingName: p?.label || name,
+        targetTempF: p?.target_temp != null ? cToF(p.target_temp) : targetTempF,
+        remainingMinutes: p?.on_time ?? duration,
+        heatOn: true,
+        active: true,
+        updatedAtMillis: Date.now(),
+      });
+      toast(`${p?.label || name} started!`, 'success');
+      setTimeout(onRefresh, 1500);
+    } catch(e) {
+      toast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <section className="relative overflow-hidden rounded-[1.75rem] border border-orange-500/20 bg-gradient-to-br from-stone-950 via-gray-900 to-black p-5 shadow-2xl">
+        <div className="absolute -right-10 -top-14 h-40 w-40 rounded-full bg-orange-500/25 blur-3xl" />
+        <div className="relative flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-black uppercase tracking-wider text-orange-300">
+              {saunaOn ? (activeBooking?.status === 'active' ? 'Sauna is on' : 'Sauna is heating') : 'Ready when you are'}
+            </p>
+            <div className="mt-2 text-6xl font-black leading-none tracking-tight">
+              {currentTempF != null ? `${currentTempF}°` : '—'}
+            </div>
+            <p className="mt-2 text-sm text-gray-400">{updatedLabel} · tap refresh for live status</p>
+          </div>
+          <button onClick={onRefresh} disabled={busy}
+            className="rounded-2xl bg-white/10 px-3 py-2 text-xs font-bold text-gray-200 hover:bg-white/15 disabled:opacity-50">
+            ↻
+          </button>
+        </div>
+
+        <div className="relative mt-5 grid grid-cols-3 gap-2">
+          <div className="rounded-2xl border border-white/10 bg-black/25 p-3 text-center">
+            <div className="text-xl font-black text-white">{targetTempF ?? effectiveTempF ?? '—'}°</div>
+            <div className="mt-1 text-[11px] font-semibold text-gray-500">Target</div>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-black/25 p-3 text-center">
+            <div className="text-xl font-black text-amber-300">{remaining != null ? `${remaining}m` : `${duration}m`}</div>
+            <div className="mt-1 text-[11px] font-semibold text-gray-500">Remaining</div>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-black/25 p-3 text-center">
+            <div className="truncate text-xl font-black" style={{color: activeBooking?.member_color || '#fff'}}>
+              {activeBooking?.member_name || currentMember?.name || '—'}
+            </div>
+            <div className="mt-1 text-[11px] font-semibold text-gray-500">Session</div>
+          </div>
+        </div>
+
+        {!saunaOn && currentMember?.is_admin && (
+          <div className="relative mt-5 grid grid-cols-[1fr_auto] gap-3">
+            <div>
+              <div className="mb-1 flex justify-between text-xs">
+                <span className="font-semibold text-gray-400">Target</span>
+                <span className="font-black text-orange-300">{effectiveTempF}°F</span>
+              </div>
+              <input type="range" min={104} max={myMaxTempF} step={2} value={effectiveTempF}
+                onChange={e => { setManuallySet(true); setTempF(Number(e.target.value)); }} className="w-full" />
+            </div>
+            <select value={duration} onChange={e => { setManuallySet(true); setDuration(Number(e.target.value)); }}
+              className="self-end rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm font-bold text-white">
+              {[30,60,90,120].map(d => <option key={d} value={d}>{d}m</option>)}
+            </select>
+          </div>
+        )}
+
+        <div className="relative mt-5 grid grid-cols-[1fr_auto_auto] gap-2">
+          <button onClick={handlePrimary} disabled={busy}
+            className={`rounded-2xl py-3.5 text-base font-black shadow-xl transition-all disabled:opacity-60 ${saunaOn ? 'bg-red-700 text-white hover:bg-red-600' : 'bg-orange-500 text-white hover:bg-orange-400'}`}>
+            {busy ? '…' : saunaOn ? 'Turn off' : currentMember?.is_admin ? 'Turn on' : 'Book & start'}
+          </button>
+          <button onClick={() => onOpenSchedule?.()} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-gray-200 hover:bg-white/15">Book</button>
+          <button onClick={() => onOpenMore?.()} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-gray-200 hover:bg-white/15">More</button>
+        </div>
+
+        {presets.length > 0 && !saunaOn && (
+          <div className="relative mt-4 flex gap-2 overflow-x-auto pb-1">
+            {presets.slice(0, 4).map(p => {
+              const overLimit = myMaxTempC && p.target_temp > myMaxTempC;
+              return (
+                <button key={p.name} onClick={() => handlePreset(p.name)} disabled={busy || overLimit}
+                  className="flex-shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-left text-xs font-bold text-gray-200 disabled:opacity-40">
+                  {p.label}<span className="ml-1 text-gray-500">{p.target_temp_f}°</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section>
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-black tracking-tight">Today</h2>
+            <p className="text-xs text-gray-500">{todaysBookings.length ? `${todaysBookings.length} session${todaysBookings.length === 1 ? '' : 's'} scheduled` : 'No sessions booked yet'}</p>
+          </div>
+          <button onClick={onOpenSchedule} className="text-xs font-bold text-orange-400 hover:text-orange-300">Full schedule</button>
+        </div>
+        <DayRow
+          date={todayIso}
+          bookings={todaysBookings}
+          members={members}
+          expanded={true}
+          onToggle={() => {}}
+          onSlotClick={onSlotClick}
+          onEmptyClick={t => onEmptyClick(t, todayIso)}
+          onCardPress={onSlotClick}
+          onPreheat={onPreheat}
+          loading={loadingBookings}
+        />
+      </section>
+    </div>
+  );
+}
+
+function SchedulePanel({
+  bookings, members, expandedDays, setExpandedDays, loading, onSlotClick,
+  onEmptyClick, onCardPress, onPreheat, onRefresh, bookingWindowDays,
+}) {
+  const [selectedDate, setSelectedDate] = useState(localDate(new Date()));
+  const daysToShow = Math.min(bookingWindowDays || 30, 14);
+
+  useEffect(() => {
+    setExpandedDays(prev => {
+      const next = new Set(prev);
+      next.add(selectedDate);
+      return next;
+    });
+  }, [selectedDate]);
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-black tracking-tight">Schedule</h2>
+          <p className="text-sm text-gray-500">Book, edit, or preheat sessions</p>
+        </div>
+        <button onClick={onRefresh} className="rounded-xl bg-gray-800 px-3 py-2 text-xs font-bold text-gray-400 hover:text-gray-200">↻</button>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {Array.from({length: daysToShow}, (_, i) => {
+          const d = new Date(); d.setDate(d.getDate() + i);
+          const iso = localDate(d);
+          const active = selectedDate === iso;
+          return (
+            <button key={iso} onClick={() => setSelectedDate(iso)}
+              className={`flex-shrink-0 rounded-2xl px-3 py-2 text-center text-xs font-bold transition-all ${active ? 'bg-orange-500 text-white' : 'bg-gray-800 text-gray-400'}`}>
+              <span className="block uppercase tracking-wide">{i === 0 ? 'Today' : d.toLocaleDateString('en-US', {weekday:'short'})}</span>
+              <span className="block text-lg leading-tight">{d.getDate()}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div>
+        {Array.from({length: 7}, (_, i) => {
+          const base = new Date(`${selectedDate}T12:00:00`);
+          base.setDate(base.getDate() + i);
+          const iso = localDate(base);
+          const dayBookings = bookings.filter(b => b.date === iso);
+          const expanded = expandedDays.has(iso);
+          return (
+            <DayRow
+              key={iso}
+              date={iso}
+              bookings={dayBookings}
+              members={members}
+              expanded={expanded}
+              onToggle={() => setExpandedDays(prev => {
+                const next = new Set(prev);
+                next.has(iso) ? next.delete(iso) : next.add(iso);
+                return next;
+              })}
+              onSlotClick={onSlotClick}
+              onEmptyClick={t => onEmptyClick(t, iso)}
+              onCardPress={onCardPress}
+              onPreheat={onPreheat}
+              loading={loading}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MorePanel({ currentMember, members, presets, pendingCount, onReloadMembers, onReloadPresets }) {
+  const [section, setSection] = useState(currentMember?.is_admin && pendingCount > 0 ? 'admin' : 'family');
+  const sections = [
+    { id: 'family', label: 'Family', detail: `${members.length} approved member${members.length === 1 ? '' : 's'}` },
+    ...(currentMember?.is_admin ? [
+      { id: 'admin', label: 'Admin', detail: pendingCount ? `${pendingCount} pending approval${pendingCount === 1 ? '' : 's'}` : 'Members and presets' },
+      { id: 'logs', label: 'Logs', detail: 'Control log and database tools' },
+    ] : []),
+  ];
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-xl font-black tracking-tight">More</h2>
+        <p className="text-sm text-gray-500">Family, presets, and maintenance tools</p>
+      </div>
+      <div className="grid gap-2">
+        {sections.map(s => (
+          <button key={s.id} onClick={() => setSection(s.id)}
+            className={`flex items-center justify-between rounded-2xl border px-4 py-3 text-left transition-all ${section === s.id ? 'border-orange-500/50 bg-orange-500/10' : 'border-gray-800 bg-gray-800/80'}`}>
+            <div>
+              <div className="font-bold text-white">{s.label}</div>
+              <div className="text-xs text-gray-500">{s.detail}</div>
+            </div>
+            <span className="text-gray-500">›</span>
+          </button>
+        ))}
+      </div>
+
+      {section === 'family' && (
+        <MembersPanel members={members} currentMember={currentMember} onReload={onReloadMembers} />
+      )}
+      {section === 'admin' && currentMember?.is_admin && (
+        <AdminPanel currentMember={currentMember} presets={presets} onReloadPresets={onReloadPresets} />
+      )}
+      {section === 'logs' && currentMember?.is_admin && (
+        <LogsPanel currentMember={currentMember} />
+      )}
+    </div>
+  );
+}
+
+function SettingsPanel({
+  currentMember, notifState, notifLoading, vapidKey, onOpenNotifications,
+  notifPrefs, onPrefChange, onLogout, onShowHelp,
+}) {
+  const isSubscribed = notifState === 'subscribed';
+  const ToggleRow = ({ title, subtitle, checked, onChange, disabled }) => (
+    <div className="flex items-center justify-between gap-4 border-t border-gray-700/70 px-4 py-4 first:border-t-0">
+      <div>
+        <div className="text-sm font-semibold text-white">{title}</div>
+        <div className="mt-0.5 text-xs text-gray-500">{subtitle}</div>
+      </div>
+      <button onClick={() => !disabled && onChange(!checked)} disabled={disabled}
+        className={`relative h-7 w-12 rounded-full transition-colors disabled:opacity-40 ${checked ? 'bg-orange-500' : 'bg-gray-600'}`}>
+        <span className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-transform ${checked ? 'translate-x-5' : 'translate-x-1'}`} />
+      </button>
+    </div>
+  );
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h2 className="text-xl font-black tracking-tight">Settings</h2>
+        <p className="text-sm text-gray-500">{currentMember?.name}'s account</p>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl bg-gray-800">
+        <div className="flex items-center justify-between gap-4 px-4 py-4">
+          <div>
+            <div className="text-sm font-semibold text-white">Notifications</div>
+            <div className="mt-0.5 text-xs text-gray-500">
+              {notifState === 'unsupported' ? 'Not supported on this device' : isSubscribed ? 'Enabled on this device' : 'Preheat and session alerts'}
+            </div>
+          </div>
+          <button onClick={onOpenNotifications} disabled={!vapidKey || notifLoading}
+            className="rounded-xl bg-orange-500/15 px-3 py-2 text-xs font-bold text-orange-300 disabled:opacity-40">
+            {isSubscribed ? 'Manage' : 'Enable'}
+          </button>
+        </div>
+        <ToggleRow title="Preheat reminders" subtitle="35 min before your session starts" checked={notifPrefs.preheat !== false} onChange={v => onPrefChange('preheat', v)} disabled={!isSubscribed} />
+        <ToggleRow title="Session ending soon" subtitle="15 min before your session ends" checked={notifPrefs.session_ending !== false} onChange={v => onPrefChange('session_ending', v)} disabled={!isSubscribed} />
+      </div>
+
+      <div className="overflow-hidden rounded-2xl bg-gray-800">
+        <div className="flex items-center justify-between gap-4 px-4 py-4">
+          <div>
+            <div className="text-sm font-semibold text-white">Default session</div>
+            <div className="mt-0.5 text-xs text-gray-500">{cToF(currentMember?.default_temp)}°F · {currentMember?.default_time} min</div>
+          </div>
+          <span className="rounded-full bg-gray-700 px-3 py-1 text-xs font-bold text-gray-400">Profile</span>
+        </div>
+        <div className="flex items-center justify-between gap-4 border-t border-gray-700/70 px-4 py-4">
+          <div>
+            <div className="text-sm font-semibold text-white">Temperature unit</div>
+            <div className="mt-0.5 text-xs text-gray-500">Displayed throughout the app</div>
+          </div>
+          <div className="rounded-full bg-black/25 p-1 text-xs font-black">
+            <span className="px-3 py-1 text-gray-500">C</span>
+            <span className="rounded-full bg-orange-300 px-3 py-1 text-gray-950">F</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl bg-gray-800">
+        <button onClick={onShowHelp} className="flex w-full items-center justify-between px-4 py-4 text-left">
+          <div>
+            <div className="text-sm font-semibold text-white">FAQ</div>
+            <div className="mt-0.5 text-xs text-gray-500">Booking, controls, presets, and admin notes</div>
+          </div>
+          <span className="text-gray-500">›</span>
+        </button>
+        <button onClick={onLogout} className="flex w-full items-center justify-between border-t border-gray-700/70 px-4 py-4 text-left">
+          <div>
+            <div className="text-sm font-semibold text-red-300">Sign out</div>
+            <div className="mt-0.5 text-xs text-gray-500">Remove this session from the device</div>
+          </div>
+          <span className="text-gray-500">↩</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── help modal ───────────────────────────────────────────────────────────────
 function HelpModal({ onClose }) {
   const faqs = [
@@ -2562,7 +3009,7 @@ function MainApp({ currentMember, onLogout }) {
   const [bookDefaultTime, setBookDefaultTime] = useState(null);
   const [bookDefaultDate, setBookDefaultDate] = useState(null);
   const [selectedSlot, setSelectedSlot] = useState(null);
-  const [tab, setTab] = useState('today'); // today | controls | members | admin
+  const [tab, setTab] = useState('home'); // home | schedule | more | settings
   // Controls form state lives here (not in Controls) so a user-chosen temp/duration
   // survives the Controls component unmounting on tab switches.
   const [ctrlTempF, setCtrlTempF] = useState(cToF(currentMember?.default_temp ?? 90));
@@ -2671,12 +3118,12 @@ function MainApp({ currentMember, onLogout }) {
     // Listen for messages from SW (e.g. notification tap → open booking or tab)
     navigator.serviceWorker.addEventListener('message', e => {
       if (e.data?.type === 'OPEN_BOOKING') {
-        setTab('today');
+        setTab('schedule');
         loadBookings();
         loadStatus();
       } else if (e.data?.type === 'OPEN_TAB') {
-        setTab(e.data.tab);
-        if (e.data.tab === 'controls') loadStatus();
+        setTab(e.data.tab === 'controls' ? 'home' : e.data.tab);
+        if (e.data.tab === 'controls' || e.data.tab === 'home') loadStatus();
       }
     });
   }, []);
@@ -2885,7 +3332,7 @@ function MainApp({ currentMember, onLogout }) {
   function handleEmptyTimelineClick(t, date) {
     if (members.length === 0) {
       toast('Add a family member first', 'info');
-      setTab('members');
+      setTab('more');
       return;
     }
     setBookDefaultDate(date || today);
@@ -2975,20 +3422,16 @@ function MainApp({ currentMember, onLogout }) {
       {/* tab nav */}
       {(() => {
         const tabs = [
-          {id:'today',    label:'Today'},
-          {id:'controls', label:'Controls'},
-          {id:'members',  label:'Members'},
-          ...(currentMember?.is_admin ? [
-            {id:'admin', label:'Admin', badge: pendingCount},
-            {id:'logs',  label:'Logs'},
-          ] : []),
+          {id:'home',     label:'Home'},
+          {id:'schedule', label:'Schedule'},
+          {id:'more',     label:'More', badge: currentMember?.is_admin ? pendingCount : 0},
+          {id:'settings', label:'Settings'},
         ];
         const tabIcon = {
-          today:    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
-          controls: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>,
-          members:  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
-          admin:    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
-          logs:     <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>,
+          home:     <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>,
+          schedule: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
+          more:     <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>,
+          settings: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
         };
         const TopBtn = t => (
           <button key={t.id} onClick={()=>setTab(t.id)}
@@ -3038,69 +3481,79 @@ function MainApp({ currentMember, onLogout }) {
           </div>
         )}
 
-        {tab === 'today' && (
-          <>
-            {/* section header */}
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-lg font-black tracking-tight">Schedule</h2>
-              <button onClick={loadBookings} className="text-xs text-gray-500 hover:text-gray-300">↻ refresh</button>
-            </div>
-
-            {/* stacked 7-day week view */}
-            {Array.from({length: 7}, (_, i) => {
-              const d = new Date(); d.setDate(d.getDate() + i);
-              const iso = localDate(d);
-              const dayBookings = bookings.filter(b => b.date === iso);
-              const isExpanded  = expandedDays.has(iso);
-              function toggleDay() {
-                setExpandedDays(prev => {
-                  const next = new Set(prev);
-                  next.has(iso) ? next.delete(iso) : next.add(iso);
-                  return next;
-                });
-              }
-              return (
-                <DayRow
-                  key={iso}
-                  date={iso}
-                  bookings={dayBookings}
-                  members={members}
-                  expanded={isExpanded}
-                  onToggle={toggleDay}
-                  onSlotClick={setSelectedSlot}
-                  onEmptyClick={t => handleEmptyTimelineClick(t, iso)}
-                  onCardPress={setSelectedSlot}
-                  onPreheat={handlePreheat}
-                  loading={bookingsLoading}
-                />
-              );
-            })}
-          </>
+        {tab === 'home' && (
+          <HomePanel
+            status={status}
+            statusUpdatedAt={statusUpdatedAt}
+            bookings={bookings}
+            members={members}
+            presets={presets}
+            currentMember={currentMember}
+            onRefresh={loadStatus}
+            onBook={loadBookings}
+            toast={toast}
+            tempF={ctrlTempF}
+            setTempF={setCtrlTempF}
+            duration={ctrlDuration}
+            setDuration={setCtrlDuration}
+            manuallySet={ctrlManuallySet}
+            setManuallySet={setCtrlManuallySet}
+            onOpenSchedule={() => setTab('schedule')}
+            onOpenMore={() => setTab('more')}
+            onSlotClick={setSelectedSlot}
+            onEmptyClick={handleEmptyTimelineClick}
+            onPreheat={handlePreheat}
+            loadingBookings={bookingsLoading}
+          />
         )}
 
-        {tab === 'controls' && (
-          <Controls status={status} statusUpdatedAt={statusUpdatedAt} bookings={bookings} members={members} presets={presets} currentMember={currentMember} onRefresh={loadStatus} onBook={loadBookings} toast={toast}
-            tempF={ctrlTempF} setTempF={setCtrlTempF} duration={ctrlDuration} setDuration={setCtrlDuration} manuallySet={ctrlManuallySet} setManuallySet={setCtrlManuallySet} />
+        {tab === 'schedule' && (
+          <SchedulePanel
+            bookings={bookings}
+            members={members}
+            expandedDays={expandedDays}
+            setExpandedDays={setExpandedDays}
+            loading={bookingsLoading}
+            onSlotClick={setSelectedSlot}
+            onEmptyClick={handleEmptyTimelineClick}
+            onCardPress={setSelectedSlot}
+            onPreheat={handlePreheat}
+            onRefresh={loadBookings}
+            bookingWindowDays={bookingWindowDays}
+          />
         )}
 
-        {tab === 'members' && (
-          <MembersPanel members={members} currentMember={currentMember} onReload={() => { loadMembers(); loadBookings(); }} />
+        {tab === 'more' && (
+          <MorePanel
+            currentMember={currentMember}
+            members={members}
+            presets={presets}
+            pendingCount={pendingCount}
+            onReloadMembers={() => { loadMembers(); loadBookings(); loadPendingCount(); }}
+            onReloadPresets={loadPresets}
+          />
         )}
 
-        {tab === 'admin' && currentMember?.is_admin && (
-          <AdminPanel currentMember={currentMember} presets={presets} onReloadPresets={loadPresets} />
-        )}
-
-        {tab === 'logs' && currentMember?.is_admin && (
-          <LogsPanel currentMember={currentMember} />
+        {tab === 'settings' && (
+          <SettingsPanel
+            currentMember={currentMember}
+            notifState={notifState}
+            notifLoading={notifLoading}
+            vapidKey={vapidKey}
+            onOpenNotifications={() => setShowNotifPanel(true)}
+            notifPrefs={notifPrefs}
+            onPrefChange={handlePrefChange}
+            onLogout={onLogout}
+            onShowHelp={() => setShowHelp(true)}
+          />
         )}
       </main>
 
       {/* FAB */}
-      {tab === 'today' && (
+      {(tab === 'home' || tab === 'schedule') && (
         <button
           onClick={() => {
-            if (members.length === 0) { toast('Add a family member first','info'); setTab('members'); return; }
+            if (members.length === 0) { toast('Add a family member first','info'); setTab('more'); return; }
             setBookDefaultDate(today);
             setBookDefaultTime(nowStr);
             setShowBookModal(true);

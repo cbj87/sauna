@@ -1,0 +1,874 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sweat Box Frontend Mockups</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070707;
+      --panel: #151311;
+      --panel-2: #201a16;
+      --line: rgba(255,255,255,.11);
+      --muted: #a8a29e;
+      --text: #fafaf9;
+      --orange: #f97316;
+      --amber: #fbbf24;
+      --green: #22c55e;
+      --red: #ef4444;
+      --nav: #0f0f0f;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 16% 8%, rgba(249,115,22,.22), transparent 34%),
+        radial-gradient(circle at 80% 0%, rgba(251,191,36,.10), transparent 30%),
+        linear-gradient(180deg, #14100d, var(--bg) 38%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .page {
+      max-width: 1450px;
+      margin: 0 auto;
+      padding: 40px 28px 56px;
+    }
+
+    .intro {
+      max-width: 820px;
+      margin-bottom: 30px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(30px, 4vw, 52px);
+      letter-spacing: 0;
+      line-height: 1.02;
+    }
+
+    .intro p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(280px, 1fr));
+      gap: 22px;
+      align-items: start;
+    }
+
+    .mock {
+      min-width: 0;
+    }
+
+    .mock-title {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 14px;
+      margin: 0 6px 12px;
+    }
+
+    .mock-title h2 {
+      margin: 0;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+
+    .mock-title span {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .phone {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 390 / 844;
+      min-height: 720px;
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: 42px;
+      overflow: hidden;
+      background: #090909;
+      box-shadow: 0 24px 80px rgba(0,0,0,.55);
+    }
+
+    .screen {
+      height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 78% 8%, rgba(249,115,22,.20), transparent 32%),
+        linear-gradient(180deg, #111, #070707 56%);
+      padding: 24px 16px 86px;
+    }
+
+    .statusbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      height: 18px;
+      margin: 2px 8px 16px;
+      color: #e7e5e4;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .header h3 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1;
+      letter-spacing: 0;
+    }
+
+    .header p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .avatar {
+      display: grid;
+      place-items: center;
+      width: 40px;
+      height: 40px;
+      border-radius: 14px;
+      background: linear-gradient(145deg, #fb923c, #ea580c);
+      color: #fff7ed;
+      font-weight: 900;
+      box-shadow: 0 0 22px rgba(249,115,22,.35);
+    }
+
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.04));
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 15px;
+      box-shadow: 0 14px 44px rgba(0,0,0,.32);
+    }
+
+    .hero-control {
+      padding: 18px;
+      background:
+        radial-gradient(circle at 76% 28%, rgba(249,115,22,.32), transparent 34%),
+        linear-gradient(145deg, rgba(43,31,23,.96), rgba(14,13,12,.96));
+    }
+
+    .hero-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .eyebrow {
+      color: #fed7aa;
+      font-size: 12px;
+      font-weight: 750;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .big-temp {
+      margin: 7px 0 0;
+      font-size: 58px;
+      line-height: .95;
+      font-weight: 850;
+      letter-spacing: 0;
+    }
+
+    .state-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(34,197,94,.13);
+      color: #86efac;
+      font-size: 12px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .state-pill.orange {
+      background: rgba(249,115,22,.15);
+      color: #fdba74;
+    }
+
+    .metric-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .metric {
+      padding: 10px;
+      border-radius: 12px;
+      background: rgba(0,0,0,.24);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1.1;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.2;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    button, .btn {
+      border: 0;
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: rgba(255,255,255,.08);
+      color: var(--text);
+      font: inherit;
+      font-weight: 760;
+      white-space: nowrap;
+    }
+
+    .primary {
+      background: linear-gradient(135deg, var(--orange), #f59e0b);
+      color: #160b04;
+      box-shadow: 0 12px 26px rgba(249,115,22,.28);
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 20px 2px 10px;
+    }
+
+    .section-head h4 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .section-head a, .link {
+      color: #fdba74;
+      font-size: 12px;
+      font-weight: 750;
+      text-decoration: none;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 9px;
+    }
+
+    .slot {
+      display: grid;
+      grid-template-columns: 58px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 11px;
+      border-radius: 14px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+
+    .slot.now {
+      background: rgba(249,115,22,.11);
+      border-color: rgba(249,115,22,.36);
+    }
+
+    .time {
+      color: #d6d3d1;
+      font-size: 12px;
+      font-weight: 760;
+    }
+
+    .slot strong {
+      display: block;
+      font-size: 14px;
+    }
+
+    .slot span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 2px;
+    }
+
+    .mini-pill {
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.08);
+      color: #d6d3d1;
+      font-size: 11px;
+      font-weight: 750;
+    }
+
+    .day-strip {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 7px;
+      margin: 4px 0 14px;
+    }
+
+    .day {
+      min-width: 0;
+      padding: 8px 0;
+      border-radius: 13px;
+      background: rgba(255,255,255,.06);
+      color: var(--muted);
+      text-align: center;
+      border: 1px solid rgba(255,255,255,.06);
+    }
+
+    .day strong {
+      display: block;
+      color: inherit;
+      font-size: 13px;
+    }
+
+    .day span {
+      display: block;
+      margin-top: 3px;
+      font-size: 10px;
+    }
+
+    .day.active {
+      color: #1c0d04;
+      background: linear-gradient(135deg, #fb923c, #fbbf24);
+    }
+
+    .schedule-card {
+      padding: 0;
+      overflow: hidden;
+    }
+
+    .schedule-row {
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      min-height: 62px;
+      border-top: 1px solid rgba(255,255,255,.08);
+    }
+
+    .schedule-row:first-child { border-top: 0; }
+
+    .schedule-row .hour {
+      padding: 13px 0 0 13px;
+      color: #78716c;
+      font-size: 12px;
+      font-weight: 720;
+    }
+
+    .bar {
+      align-self: center;
+      margin-right: 12px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(255,255,255,.055);
+      border: 1px dashed rgba(255,255,255,.12);
+      color: #a8a29e;
+      font-size: 13px;
+    }
+
+    .bar.booked {
+      background: linear-gradient(135deg, rgba(249,115,22,.34), rgba(245,158,11,.18));
+      border: 1px solid rgba(249,115,22,.42);
+      color: #fff7ed;
+    }
+
+    .bar.mine {
+      background: linear-gradient(135deg, rgba(34,197,94,.30), rgba(249,115,22,.14));
+      border-color: rgba(34,197,94,.34);
+    }
+
+    .fab {
+      position: absolute;
+      right: 18px;
+      bottom: 90px;
+      display: grid;
+      place-items: center;
+      width: 54px;
+      height: 54px;
+      border-radius: 19px;
+      background: linear-gradient(135deg, var(--orange), #f59e0b);
+      color: #170a02;
+      font-size: 26px;
+      font-weight: 850;
+      box-shadow: 0 18px 36px rgba(249,115,22,.34);
+    }
+
+    .list {
+      display: grid;
+      gap: 10px;
+    }
+
+    .list-card {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 13px;
+      border-radius: 16px;
+      background: rgba(255,255,255,.055);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+
+    .list-card strong {
+      display: block;
+      font-size: 14px;
+    }
+
+    .list-card span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .danger { color: #fca5a5; }
+    .ok { color: #86efac; }
+
+    .settings-group {
+      margin-bottom: 14px;
+      overflow: hidden;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,.08);
+      background: rgba(255,255,255,.045);
+    }
+
+    .setting {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      padding: 14px;
+      border-top: 1px solid rgba(255,255,255,.08);
+    }
+
+    .setting:first-child { border-top: 0; }
+
+    .setting strong {
+      display: block;
+      font-size: 14px;
+    }
+
+    .setting span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .toggle {
+      position: relative;
+      width: 46px;
+      height: 28px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.16);
+      flex: 0 0 auto;
+    }
+
+    .toggle.on {
+      background: rgba(249,115,22,.9);
+    }
+
+    .toggle::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      left: 4px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: white;
+      transition: transform .2s;
+    }
+
+    .toggle.on::after { transform: translateX(18px); }
+
+    .segmented {
+      display: inline-grid;
+      grid-template-columns: 1fr 1fr;
+      padding: 3px;
+      border-radius: 999px;
+      background: rgba(0,0,0,.25);
+      border: 1px solid rgba(255,255,255,.08);
+    }
+
+    .segmented span {
+      display: block;
+      padding: 6px 10px;
+      border-radius: 999px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .segmented .selected {
+      color: #170a02;
+      background: #fdba74;
+    }
+
+    .bottom-nav {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 4px;
+      padding: 9px 12px 18px;
+      background: rgba(12,12,12,.92);
+      border-top: 1px solid rgba(255,255,255,.08);
+      backdrop-filter: blur(18px);
+    }
+
+    .nav-item {
+      display: grid;
+      place-items: center;
+      gap: 4px;
+      color: #78716c;
+      font-size: 10px;
+      font-weight: 760;
+    }
+
+    .nav-item .icon {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 24px;
+      border-radius: 10px;
+      color: inherit;
+      font-size: 17px;
+    }
+
+    .nav-item.active {
+      color: #fdba74;
+    }
+
+    .nav-item.active .icon {
+      background: rgba(249,115,22,.16);
+    }
+
+    .note {
+      margin: 20px 6px 0;
+      color: #a8a29e;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 1280px) {
+      .grid { grid-template-columns: repeat(2, minmax(280px, 1fr)); }
+    }
+
+    @media (max-width: 720px) {
+      .page { padding: 24px 14px 42px; }
+      .grid { grid-template-columns: 1fr; }
+      .phone {
+        max-width: 430px;
+        margin: 0 auto;
+      }
+      .mock-title { max-width: 430px; margin-left: auto; margin-right: auto; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="intro">
+      <h1>Sweat Box navigation mockups</h1>
+      <p>Four proposed top-level destinations. Home becomes the daily operating surface; Schedule handles planning; More/Admin collects maintenance workflows; Settings keeps personal preferences and device setup out of the way.</p>
+    </section>
+
+    <section class="grid">
+      <article class="mock">
+        <div class="mock-title">
+          <h2>Home</h2>
+          <span>Daily dashboard</span>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span>LTE 100%</span></div>
+            <div class="header">
+              <div>
+                <h3>Home</h3>
+                <p>Tuesday, June 30</p>
+              </div>
+              <div class="avatar">S</div>
+            </div>
+
+            <section class="card hero-control">
+              <div class="hero-row">
+                <div>
+                  <div class="eyebrow">Sauna is heating</div>
+                  <div class="big-temp">135&deg;</div>
+                </div>
+                <div class="state-pill orange">18m to ready</div>
+              </div>
+              <div class="metric-row">
+                <div class="metric"><strong>208&deg;</strong><span>Target</span></div>
+                <div class="metric"><strong>89m</strong><span>Remaining</span></div>
+                <div class="metric"><strong>CBJ</strong><span>Session</span></div>
+              </div>
+              <div class="actions">
+                <button class="primary">Turn off</button>
+                <button>+15</button>
+                <button>Light</button>
+              </div>
+            </section>
+
+            <div class="section-head">
+              <h4>Today</h4>
+              <a href="#">Full schedule</a>
+            </div>
+
+            <section class="timeline">
+              <div class="slot now">
+                <div class="time">Now</div>
+                <div><strong>CBJ's session</strong><span>5:30 PM - 7:00 PM</span></div>
+                <div class="mini-pill">Active</div>
+              </div>
+              <div class="slot">
+                <div class="time">7:15</div>
+                <div><strong>Open window</strong><span>Enough time for a quick sweat</span></div>
+                <div class="mini-pill">Book</div>
+              </div>
+              <div class="slot">
+                <div class="time">8:30</div>
+                <div><strong>Sarah</strong><span>Recovery preset, 45 min</span></div>
+                <div class="mini-pill">Later</div>
+              </div>
+            </section>
+          </div>
+
+          <nav class="bottom-nav">
+            <div class="nav-item active"><div class="icon">⌂</div><span>Home</span></div>
+            <div class="nav-item"><div class="icon">▦</div><span>Schedule</span></div>
+            <div class="nav-item"><div class="icon">⋯</div><span>More</span></div>
+            <div class="nav-item"><div class="icon">⚙</div><span>Settings</span></div>
+          </nav>
+        </div>
+        <p class="note">Purpose: answer "what is happening now?" and "what does today look like?" without making people navigate.</p>
+      </article>
+
+      <article class="mock">
+        <div class="mock-title">
+          <h2>Schedule</h2>
+          <span>Planning and booking</span>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span>LTE 100%</span></div>
+            <div class="header">
+              <div>
+                <h3>Schedule</h3>
+                <p>Book, edit, or preheat sessions</p>
+              </div>
+              <div class="avatar">S</div>
+            </div>
+
+            <div class="day-strip">
+              <div class="day"><strong>Mon</strong><span>29</span></div>
+              <div class="day active"><strong>Tue</strong><span>30</span></div>
+              <div class="day"><strong>Wed</strong><span>1</span></div>
+              <div class="day"><strong>Thu</strong><span>2</span></div>
+              <div class="day"><strong>Fri</strong><span>3</span></div>
+              <div class="day"><strong>Sat</strong><span>4</span></div>
+              <div class="day"><strong>Sun</strong><span>5</span></div>
+            </div>
+
+            <section class="card schedule-card">
+              <div class="schedule-row">
+                <div class="hour">4 PM</div>
+                <div class="bar">Open</div>
+              </div>
+              <div class="schedule-row">
+                <div class="hour">5 PM</div>
+                <div class="bar booked mine"><strong>CBJ</strong> 5:30 - 7:00 PM</div>
+              </div>
+              <div class="schedule-row">
+                <div class="hour">6 PM</div>
+                <div class="bar booked mine">In session - 208&deg;</div>
+              </div>
+              <div class="schedule-row">
+                <div class="hour">7 PM</div>
+                <div class="bar">Cooldown buffer until 7:15</div>
+              </div>
+              <div class="schedule-row">
+                <div class="hour">8 PM</div>
+                <div class="bar booked"><strong>Sarah</strong> 8:30 - 9:15 PM</div>
+              </div>
+              <div class="schedule-row">
+                <div class="hour">9 PM</div>
+                <div class="bar">Open after 9:30 PM</div>
+              </div>
+            </section>
+
+            <div class="fab">+</div>
+          </div>
+
+          <nav class="bottom-nav">
+            <div class="nav-item"><div class="icon">⌂</div><span>Home</span></div>
+            <div class="nav-item active"><div class="icon">▦</div><span>Schedule</span></div>
+            <div class="nav-item"><div class="icon">⋯</div><span>More</span></div>
+            <div class="nav-item"><div class="icon">⚙</div><span>Settings</span></div>
+          </nav>
+        </div>
+        <p class="note">Purpose: full booking workflow. Today summary moves to Home, but week browsing and edits stay here.</p>
+      </article>
+
+      <article class="mock">
+        <div class="mock-title">
+          <h2>More / Admin</h2>
+          <span>Secondary workflows</span>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span>LTE 100%</span></div>
+            <div class="header">
+              <div>
+                <h3>More</h3>
+                <p>Family, presets, and admin tools</p>
+              </div>
+              <div class="avatar">S</div>
+            </div>
+
+            <section class="list">
+              <div class="list-card">
+                <div><strong>Family members</strong><span>Approve users, limits, colors</span></div>
+                <div class="mini-pill">2 pending</div>
+              </div>
+              <div class="list-card">
+                <div><strong>Presets</strong><span>Recovery, Deep Sweat, Quick Start</span></div>
+                <div class="mini-pill">5</div>
+              </div>
+              <div class="list-card">
+                <div><strong>Control log</strong><span>Recent sauna changes</span></div>
+                <div class="mini-pill">View</div>
+              </div>
+              <div class="list-card">
+                <div><strong>Database browser</strong><span>Advanced maintenance</span></div>
+                <div class="mini-pill danger">Admin</div>
+              </div>
+            </section>
+
+            <div class="section-head">
+              <h4>Pending approvals</h4>
+              <a href="#">Manage</a>
+            </div>
+
+            <section class="card">
+              <div class="slot">
+                <div class="time">MJ</div>
+                <div><strong>Mike Jones</strong><span>Requested access today</span></div>
+                <div class="mini-pill ok">Approve</div>
+              </div>
+              <div style="height:10px"></div>
+              <div class="slot">
+                <div class="time">Preset</div>
+                <div><strong>Evening reset</strong><span>190&deg;, 45 minutes</span></div>
+                <div class="mini-pill">Edit</div>
+              </div>
+            </section>
+          </div>
+
+          <nav class="bottom-nav">
+            <div class="nav-item"><div class="icon">⌂</div><span>Home</span></div>
+            <div class="nav-item"><div class="icon">▦</div><span>Schedule</span></div>
+            <div class="nav-item active"><div class="icon">⋯</div><span>More</span></div>
+            <div class="nav-item"><div class="icon">⚙</div><span>Settings</span></div>
+          </nav>
+        </div>
+        <p class="note">Purpose: move lower-frequency admin surfaces away from the core daily flow while keeping them reachable.</p>
+      </article>
+
+      <article class="mock">
+        <div class="mock-title">
+          <h2>Settings</h2>
+          <span>Personal preferences</span>
+        </div>
+        <div class="phone">
+          <div class="screen">
+            <div class="statusbar"><span>9:41</span><span>LTE 100%</span></div>
+            <div class="header">
+              <div>
+                <h3>Settings</h3>
+                <p>CBJ's account</p>
+              </div>
+              <div class="avatar">C</div>
+            </div>
+
+            <section class="settings-group">
+              <div class="setting">
+                <div><strong>Temperature unit</strong><span>Used across controls and schedule</span></div>
+                <div class="segmented"><span>C</span><span class="selected">F</span></div>
+              </div>
+              <div class="setting">
+                <div><strong>Push notifications</strong><span>Preheat and session ending alerts</span></div>
+                <div class="toggle on"></div>
+              </div>
+              <div class="setting">
+                <div><strong>Live Activity</strong><span>Lock screen sauna status</span></div>
+                <div class="toggle on"></div>
+              </div>
+            </section>
+
+            <section class="settings-group">
+              <div class="setting">
+                <div><strong>Default session</strong><span>208&deg; for 90 minutes</span></div>
+                <span class="link">Edit</span>
+              </div>
+              <div class="setting">
+                <div><strong>Password</strong><span>Last changed recently</span></div>
+                <span class="link">Change</span>
+              </div>
+              <div class="setting">
+                <div><strong>Install status</strong><span>Native iOS app</span></div>
+                <span class="mini-pill ok">Ready</span>
+              </div>
+            </section>
+
+            <section class="settings-group">
+              <div class="setting">
+                <div><strong>Sign out</strong><span>Remove this session from the device</span></div>
+                <span class="link danger">Sign out</span>
+              </div>
+            </section>
+          </div>
+
+          <nav class="bottom-nav">
+            <div class="nav-item"><div class="icon">⌂</div><span>Home</span></div>
+            <div class="nav-item"><div class="icon">▦</div><span>Schedule</span></div>
+            <div class="nav-item"><div class="icon">⋯</div><span>More</span></div>
+            <div class="nav-item active"><div class="icon">⚙</div><span>Settings</span></div>
+          </nav>
+        </div>
+        <p class="note">Purpose: keep account, device, notifications, and defaults separate from operational sauna actions.</p>
+      </article>
+    </section>
+  </main>
+</body>
+</html>
