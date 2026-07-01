@@ -401,12 +401,43 @@ def _send_apns_alert(
         return False, None, str(exc)
 
 
-def _dispatch_alert_to_member(db, member_id: int, payload: dict) -> None:
+# APNs reasons that mean "this token is dead — stop using it." Other 4xx codes
+# (MissingTopic, PayloadTooLarge, BadCollapseId, credential errors, …) reflect
+# server-side bugs and MUST NOT nuke the device row — otherwise one bad payload
+# would wipe every registration in the DB on the next send.
+_APNS_STALE_TOKEN_REASONS = frozenset({
+    "BadDeviceToken",
+    "Unregistered",
+    "DeviceTokenNotForTopic",
+    "ExpiredProviderToken",  # rare — provider token issue, but token is unusable in this state
+})
+
+
+def _apns_token_is_stale(status_code: int | None, body: str | None) -> bool:
+    """Only 410 Unregistered or a 400 with a token-specific reason marks the
+    device token as dead. Everything else is treated as a transient/server bug."""
+    if status_code == 410:
+        return True
+    if status_code == 400 and body:
+        try:
+            reason = json.loads(body).get("reason")
+        except (ValueError, AttributeError):
+            reason = None
+        return reason in _APNS_STALE_TOKEN_REASONS
+    return False
+
+
+def _dispatch_alert_to_member(db, member_id: int, payload: dict) -> dict:
     """Deliver one alert to one member. Prefer APNS (native app), fall back to Web Push.
 
     payload keys: title, body, url?, tag?, interruption_level?, thread_id?, plus any
     extra keys that should ride along on Web Push (e.g. bookingId).
+
+    Returns a dict describing what happened — used by /api/push/test and other
+    callers that want to surface delivery status.
     """
+    result = {"transport": None, "sent": 0, "failed": 0, "cleared": 0}
+
     title = payload.get("title") or ""
     body = payload.get("body") or ""
     tag = payload.get("tag")
@@ -420,8 +451,9 @@ def _dispatch_alert_to_member(db, member_id: int, payload: dict) -> None:
     )
 
     if apns_tokens:
+        result["transport"] = "apns"
         for device in apns_tokens:
-            ok, status_code, _ = _send_apns_alert(
+            ok, status_code, resp_body = _send_apns_alert(
                 device.apns_token,
                 title,
                 body,
@@ -435,25 +467,36 @@ def _dispatch_alert_to_member(db, member_id: int, payload: dict) -> None:
                     and v is not None
                 },
             )
-            # 400 with BadDeviceToken / 410 Unregistered ⇒ stale — drop it.
-            if status_code in (400, 410):
+            if ok:
+                result["sent"] += 1
+            else:
+                result["failed"] += 1
+            if _apns_token_is_stale(status_code, resp_body):
                 device.apns_token = None
-        return
+                result["cleared"] += 1
+        return result
 
     # Fallback: Web Push. Same payload shape as before.
     if not VAPID_PRIVATE_KEY:
-        return
+        return result
+    result["transport"] = "webpush"
     subs = db.query(PushSubscription).filter_by(member_id=member_id).all()
     dead: list[str] = []
     for sub in subs:
-        result = _send_push(
+        push_result = _send_push(
             {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
             payload,
         )
-        if result == 410:
-            dead.append(sub.endpoint)
+        if push_result is True:
+            result["sent"] += 1
+        else:
+            result["failed"] += 1
+            if push_result == 410:
+                dead.append(sub.endpoint)
     for ep in dead:
         db.query(PushSubscription).filter_by(endpoint=ep).delete()
+        result["cleared"] += 1
+    return result
 
 
 def _notify_admins(payload: dict, pref_key: str | None = None) -> None:
@@ -1380,6 +1423,32 @@ def reset_password():
 
 @app.route("/api/auth/logout", methods=["POST"])
 def logout():
+    # If the client says which native device it's on, drop that device row so
+    # the previous member's APNs/LiveActivity tokens can't keep hitting this
+    # phone. Cascade-deletes the related LiveActivityToken /
+    # LiveActivityPushToStartToken rows via ON DELETE CASCADE.
+    member_id = session.get("member_id")
+    native_device_id = None
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        native_device_id = (body.get("nativeDeviceId") or body.get("native_device_id") or "").strip() or None
+
+    if member_id and native_device_id:
+        db = SessionLocal()
+        try:
+            device = (
+                db.query(NativeDevice)
+                .filter_by(native_device_id=native_device_id, member_id=member_id)
+                .first()
+            )
+            if device:
+                db.delete(device)
+                db.commit()
+        except Exception as exc:
+            logger.warning("Failed to clean up native device on logout: %s", exc)
+        finally:
+            db.close()
+
     session.clear()
     return jsonify({"ok": True})
 
@@ -2352,7 +2421,10 @@ def push_unsubscribe():
 
 @app.route("/api/push/test", methods=["POST"])
 def push_test():
-    """Send a test notification via whichever transport is available (APNS or Web Push)."""
+    """Send a test notification via whichever transport is available (APNS or Web Push).
+
+    Returns diagnostic detail so the UI can tell a stuck registration ("no
+    transport") apart from a failing send ("APNs rejected it")."""
     db, member, error = require_auth()
     if error:
         return error
@@ -2366,15 +2438,28 @@ def push_test():
         if not has_apns and not has_web:
             return err("No notification transport found — enable notifications first")
 
-        _notify_member(member.id, {
+        result = _dispatch_alert_to_member(db, member.id, {
             "title": "🛖 Sweat Box test",
             "body": f"Hey {member.name}! Push notifications are working.",
             "tag": "push-test",
             "thread_id": "test",
             "url": "/",
         })
-        transport = "apns" if has_apns else "webpush"
-        return jsonify({"ok": True, "transport": transport})
+        db.commit()
+
+        if result["sent"] == 0:
+            return err(
+                f"{result['transport'] or 'notification'} delivery failed "
+                f"({result['failed']} attempt{'s' if result['failed'] != 1 else ''}) — "
+                "check server logs",
+                502,
+            )
+        return jsonify({
+            "ok": True,
+            "transport": result["transport"],
+            "sent": result["sent"],
+            "failed": result["failed"],
+        })
     finally:
         db.close()
 

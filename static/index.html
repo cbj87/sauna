@@ -3889,7 +3889,11 @@ function App() {
 
   async function handleLogout() {
     NativeBridge.signOut();
-    try { await api('/api/auth/logout', {method:'POST'}); } catch {}
+    // Include nativeDeviceId so the server drops this device's APNs +
+    // LiveActivity tokens for the outgoing member — otherwise pushes for
+    // the previous account keep landing on this phone.
+    const body = NativeBridge.deviceId ? { nativeDeviceId: NativeBridge.deviceId } : undefined;
+    try { await api('/api/auth/logout', { method: 'POST', body }); } catch {}
     _csrfToken = null;
     setCurrentMember(null);
     setAuthState('login');
