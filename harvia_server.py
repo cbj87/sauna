@@ -540,13 +540,12 @@ def _push_live_activity_start_to_tokens(
     content_state: dict,
     alert_title: str,
     alert_body: str,
-) -> tuple[int, int]:
-    """Remote-start Live Activities. Returns (sent, stale_deleted)."""
+) -> dict:
+    """Remote-start Live Activities. Returns send/delete/error counts."""
+    result = {"sent": 0, "failed": 0, "deleted": 0, "last_error": None}
     if not tokens or not _apns_is_configured():
-        return 0, 0
+        return result
 
-    sent = 0
-    deleted = 0
     for token_row in tokens:
         payload = _live_activity_start_payload(
             content_state,
@@ -556,8 +555,14 @@ def _push_live_activity_start_to_tokens(
         )
         ok, status_code, body = _send_live_activity_apns(token_row.token, payload)
         if ok:
-            sent += 1
+            result["sent"] += 1
             continue
+        result["failed"] += 1
+        result["last_error"] = {
+            "status": status_code,
+            "body": body,
+            "tokenId": token_row.id,
+        }
         is_stale = status_code in (400, 410) and isinstance(body, str) and (
             "BadDeviceToken" in body
             or "Unregistered" in body
@@ -566,16 +571,16 @@ def _push_live_activity_start_to_tokens(
         )
         if is_stale:
             db.delete(token_row)
-            deleted += 1
+            result["deleted"] += 1
             logger.info("Removed stale push-to-start token id=%s status=%s", token_row.id, status_code)
         else:
             logger.warning(
                 "Live Activity remote start failed token_id=%s status=%s body=%s",
                 token_row.id, status_code, body,
             )
-    if deleted:
+    if result["deleted"]:
         db.commit()
-    return sent, deleted
+    return result
 
 
 def _fanout_live_activity_start(
@@ -584,7 +589,7 @@ def _fanout_live_activity_start(
     status: dict | None = None,
 ) -> dict:
     """Remote-start Live Activities for eligible native devices."""
-    result = {"sent": 0, "tokens": 0, "deleted": 0, "skipped": None}
+    result = {"sent": 0, "failed": 0, "tokens": 0, "deleted": 0, "skipped": None, "last_error": None}
     if not _apns_is_configured():
         result["skipped"] = "APNs is not configured"
         return result
@@ -602,8 +607,10 @@ def _fanout_live_activity_start(
             content_state = _live_activity_payload_for_booking(booking, status)
             title = "Sauna is on"
             body = f"{booking.member.name if booking.member else 'Someone'} started a session."
-            sent, deleted = _push_live_activity_start_to_tokens(db, tokens, content_state, title, body)
-            result.update({"sent": sent, "deleted": deleted, "skipped": None})
+            send_result = _push_live_activity_start_to_tokens(db, tokens, content_state, title, body)
+            result.update({**send_result, "skipped": None})
+            if result["sent"] <= 0 and result["failed"] > 0:
+                result["skipped"] = "APNs rejected all push-to-start sends"
             return result
     except Exception as exc:
         logger.error("_fanout_live_activity_start(booking_id=%s) failed: %s", booking_id, exc)
@@ -2627,7 +2634,12 @@ def admin_start_current_live_activity():
         status=status,
     )
     if result.get("sent", 0) <= 0:
-        return err(result.get("skipped") or "No Live Activity start pushes sent", 502)
+        return jsonify({
+            "ok": False,
+            "bookingId": booking_id,
+            "reason": result.get("skipped") or "No Live Activity start pushes sent",
+            **result,
+        })
     return jsonify({"ok": True, "bookingId": booking_id, **result})
 
 

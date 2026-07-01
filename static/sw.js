@@ -7,7 +7,7 @@
 //   API non-GET requests             → network only (never cache mutations)
 //   Background sync                  → retry queued bookings on reconnect
 
-const CACHE_VERSION = 'sweatbox-v10';
+const CACHE_VERSION = 'sweatbox-v11';
 
 const PRECACHE_URLS = [
   '/',

@@ -2808,7 +2808,12 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
       const res = await api('/api/admin/native/live-activity/start-current', {
         method: 'POST',
       });
-      setLiveActivityMessage(`Sent to ${res.sent} device${res.sent === 1 ? '' : 's'} (${res.tokens} eligible token${res.tokens === 1 ? '' : 's'}).`);
+      if (res.ok) {
+        setLiveActivityMessage(`Sent to ${res.sent} device${res.sent === 1 ? '' : 's'} (${res.tokens} eligible token${res.tokens === 1 ? '' : 's'}).`);
+      } else {
+        const apns = res.last_error ? ` APNs: ${res.last_error.status || 'n/a'} ${res.last_error.body || ''}` : '';
+        setLiveActivityMessage(`Not sent: ${res.reason || 'unknown'} (${res.tokens || 0} eligible token${res.tokens === 1 ? '' : 's'}).${apns}`);
+      }
     }
     catch(e) { setLiveActivityMessage(e.message); }
     finally { setBusy(false); }
