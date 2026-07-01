@@ -41,7 +41,21 @@ final class WebBridge: NSObject, ObservableObject, WKScriptMessageHandler {
         activityManager.onLiveActivityStatus = { [weak self] payload in
             self?.dispatchLiveActivityStatus(payload)
         }
+        RemoteNotificationTokenBroker.shared.onToken = { [weak self] token in
+            self?.dispatchRemoteNotificationToken(token)
+        }
+        if let cached = RemoteNotificationTokenBroker.shared.cachedToken {
+            // If the token landed before WebBridge was constructed (fast launch),
+            // hold it — dispatch will re-fire once the WebView is ready via
+            // repostCachedTokens().
+            cachedRemoteNotificationToken = RemoteNotificationTokenPayload(
+                token: cached,
+                updatedAtMillis: Int64(Date().timeIntervalSince1970 * 1000)
+            )
+        }
     }
+
+    private var cachedRemoteNotificationToken: RemoteNotificationTokenPayload?
 
     func configure(_ configuration: WKWebViewConfiguration) {
         let controller = WKUserContentController()
@@ -76,6 +90,9 @@ final class WebBridge: NSObject, ObservableObject, WKScriptMessageHandler {
 
     func repostCachedTokens() {
         activityManager.repostCachedTokens()
+        if let cachedRemoteNotificationToken {
+            dispatchRemoteNotificationToken(cachedRemoteNotificationToken)
+        }
     }
 
     func dispatchLiveActivityToken(_ payload: LiveActivityTokenPayload) {
@@ -88,6 +105,19 @@ final class WebBridge: NSObject, ObservableObject, WKScriptMessageHandler {
 
     func dispatchLiveActivityStatus(_ payload: LiveActivityStatusPayload) {
         dispatchNativeEvent(name: "live-activity-status", payload: payload)
+    }
+
+    func dispatchRemoteNotificationToken(_ token: String) {
+        let payload = RemoteNotificationTokenPayload(
+            token: token,
+            updatedAtMillis: Int64(Date().timeIntervalSince1970 * 1000)
+        )
+        cachedRemoteNotificationToken = payload
+        dispatchRemoteNotificationToken(payload)
+    }
+
+    private func dispatchRemoteNotificationToken(_ payload: RemoteNotificationTokenPayload) {
+        dispatchNativeEvent(name: "device-token", payload: payload)
     }
 
     private func handleStartSaunaSession(_ body: Any) {

@@ -73,3 +73,8 @@ struct LiveActivityStatusPayload: Codable {
     let message: String?
     let updatedAtMillis: Int64
 }
+
+struct RemoteNotificationTokenPayload: Codable {
+    let token: String
+    let updatedAtMillis: Int64
+}

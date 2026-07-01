@@ -342,60 +342,149 @@ def _live_activity_start_payload(
     }
 
 
-def _notify_admins_push(payload: dict, pref_key: str | None = None) -> None:
-    """Send a push notification to admin subscribers who have opted in.
+def _send_apns_alert(
+    token: str,
+    title: str,
+    body: str,
+    *,
+    collapse_id: str | None = None,
+    interruption_level: str = "active",
+    thread_id: str | None = None,
+    extras: dict | None = None,
+) -> tuple[bool, int | None, str | None]:
+    """Send an APNs alert-type push (regular banner notification, not a Live Activity).
 
-    pref_key: if provided, only admins whose notification_prefs has that key set to true
-    (or have no prefs set, meaning all defaults are on) will receive the notification.
+    interruption_level: "passive" | "active" | "time-sensitive" | "critical" — controls
+    whether iOS respects Focus modes and how prominently the alert renders. Use
+    "time-sensitive" for safety alerts like the auto-shutoff failsafe.
+
+    Returns (ok, status_code, response_body). Missing APNs config is a soft failure.
     """
+    if not _apns_is_configured():
+        return False, None, "APNs is not configured"
+
+    host = "api.sandbox.push.apple.com" if APNS_USE_SANDBOX else "api.push.apple.com"
+    url = f"https://{host}/3/device/{token}"
+    headers = {
+        "authorization": f"bearer {_apns_jwt()}",
+        "apns-topic": APNS_BUNDLE_ID,
+        "apns-push-type": "alert",
+        "apns-priority": "10",
+        "content-type": "application/json",
+        "user-agent": "SweatBox/1.0",
+    }
+    if collapse_id:
+        # apns-collapse-id must be <= 64 bytes — truncate defensively.
+        headers["apns-collapse-id"] = collapse_id[:64]
+
+    aps: dict = {
+        "alert": {"title": title, "body": body},
+        "sound": "default",
+        "interruption-level": interruption_level,
+    }
+    if thread_id:
+        aps["thread-id"] = thread_id
+    payload: dict = {"aps": aps}
+    if extras:
+        payload.update(extras)
+
+    body_bytes = json.dumps(payload, separators=(",", ":")).encode()
+    try:
+        resp = _get_apns_http_client().post(url, content=body_bytes, headers=headers)
+        text = resp.text
+        ok = 200 <= resp.status_code < 300
+        if not ok:
+            logger.warning("APNs alert HTTP error %s: %s", resp.status_code, text)
+        return ok, resp.status_code, text
+    except Exception as exc:
+        logger.error("APNs alert send failed: %s", exc)
+        return False, None, str(exc)
+
+
+def _dispatch_alert_to_member(db, member_id: int, payload: dict) -> None:
+    """Deliver one alert to one member. Prefer APNS (native app), fall back to Web Push.
+
+    payload keys: title, body, url?, tag?, interruption_level?, thread_id?, plus any
+    extra keys that should ride along on Web Push (e.g. bookingId).
+    """
+    title = payload.get("title") or ""
+    body = payload.get("body") or ""
+    tag = payload.get("tag")
+    interruption_level = payload.get("interruption_level") or "active"
+    thread_id = payload.get("thread_id")
+
+    apns_tokens = (
+        db.query(NativeDevice)
+        .filter(NativeDevice.member_id == member_id, NativeDevice.apns_token.isnot(None))
+        .all()
+    )
+
+    if apns_tokens:
+        for device in apns_tokens:
+            ok, status_code, _ = _send_apns_alert(
+                device.apns_token,
+                title,
+                body,
+                collapse_id=tag,
+                interruption_level=interruption_level,
+                thread_id=thread_id,
+                # Ride-along fields let the app deep-link or handle the tap.
+                extras={
+                    k: v for k, v in payload.items()
+                    if k not in ("title", "body", "interruption_level", "thread_id")
+                    and v is not None
+                },
+            )
+            # 400 with BadDeviceToken / 410 Unregistered ⇒ stale — drop it.
+            if status_code in (400, 410):
+                device.apns_token = None
+        return
+
+    # Fallback: Web Push. Same payload shape as before.
     if not VAPID_PRIVATE_KEY:
         return
+    subs = db.query(PushSubscription).filter_by(member_id=member_id).all()
+    dead: list[str] = []
+    for sub in subs:
+        result = _send_push(
+            {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
+            payload,
+        )
+        if result == 410:
+            dead.append(sub.endpoint)
+    for ep in dead:
+        db.query(PushSubscription).filter_by(endpoint=ep).delete()
+
+
+def _notify_admins(payload: dict, pref_key: str | None = None) -> None:
+    """Alert every admin. Prefers APNS per-member; falls back to Web Push."""
     try:
         with SessionLocal() as db:
             admins = db.query(FamilyMember).filter_by(is_admin=1, status="approved").all()
-            dead = []
             for admin in admins:
                 if pref_key is not None:
                     prefs = admin.get_notification_prefs()
-                    if not prefs.get(pref_key, True):  # default True if not set
+                    if not prefs.get(pref_key, True):
                         continue
-                subs = db.query(PushSubscription).filter_by(member_id=admin.id).all()
-                for sub in subs:
-                    result = _send_push(
-                        {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
-                        payload,
-                    )
-                    if result == 410:
-                        dead.append(sub.endpoint)
-            for ep in dead:
-                db.query(PushSubscription).filter_by(endpoint=ep).delete()
-            if dead:
-                db.commit()
+                _dispatch_alert_to_member(db, admin.id, payload)
+            db.commit()
     except Exception as exc:
-        logger.error("Failed to send admin push notifications: %s", exc)
+        logger.error("Failed to send admin notifications: %s", exc)
 
 
-def _notify_member_push(member_id: int, payload: dict) -> None:
-    """Send a push notification to a specific member's subscribers. Never raises."""
-    if not VAPID_PRIVATE_KEY:
-        return
+def _notify_member(member_id: int, payload: dict) -> None:
+    """Alert a specific member. Prefers APNS; falls back to Web Push. Never raises."""
     try:
         with SessionLocal() as db:
-            subs = db.query(PushSubscription).filter_by(member_id=member_id).all()
-            dead = []
-            for sub in subs:
-                result = _send_push(
-                    {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
-                    payload,
-                )
-                if result == 410:
-                    dead.append(sub.endpoint)
-            for ep in dead:
-                db.query(PushSubscription).filter_by(endpoint=ep).delete()
-            if dead:
-                db.commit()
+            _dispatch_alert_to_member(db, member_id, payload)
+            db.commit()
     except Exception as exc:
-        logger.error("Failed to send member push notification: %s", exc)
+        logger.error("Failed to send member notification: %s", exc)
+
+
+# Backwards-compat aliases — older call sites can be migrated incrementally.
+_notify_admins_push = _notify_admins
+_notify_member_push = _notify_member
 
 
 def get_harvia() -> HarviaClient:
@@ -802,10 +891,12 @@ def _safe_turn_off(reason: str = "") -> bool:
         _time.sleep(2)
 
     logger.error("CRITICAL: sauna failed to turn off (%s)", reason)
-    _notify_admins_push({
+    _notify_admins({
         "title": "⚠️ Sauna may still be ON",
         "body": "Automatic shut-off could not confirm the sauna turned off. Please check it manually.",
         "tag": "sauna-shutoff-failed",
+        "thread_id": "sauna-safety",
+        "interruption_level": "time-sensitive",
         "url": "/",
     })
     return False
@@ -922,75 +1013,6 @@ def check_and_auto_shutoff():
                 _safe_turn_off("auto-shutoff after booking ended")
 
 
-def check_preheat_reminders():
-    """Send push notifications for upcoming bookings when it's time to preheat."""
-    if not VAPID_PRIVATE_KEY:
-        return
-
-    now = app_now()
-    today = now.date()
-
-    with SessionLocal() as db:
-        pending = (
-            db.query(Booking)
-            .filter(
-                Booking.date == today,
-                Booking.status == "scheduled",
-                Booking.preheat_notified_at.is_(None),
-            )
-            .all()
-        )
-
-        for booking in pending:
-            # Notify 35 min before start (30 min to heat up + 5 min to react).
-            # We intentionally do NOT use booking.on_time here — that is the
-            # session *duration*, not the preheat lead time.
-            NOTIFY_BEFORE_MINUTES = 35
-            start_dt = datetime.combine(booking.date, booking.start_time)
-            notify_at = start_dt - timedelta(minutes=NOTIFY_BEFORE_MINUTES)
-
-            if now < notify_at or now >= start_dt:
-                continue
-
-            # Check preheat pref — default on if not set
-            member_prefs = booking.member.get_notification_prefs() if booking.member else {}
-            if not member_prefs.get("preheat", True):
-                booking.preheat_notified_at = now
-                db.commit()
-                continue
-
-            subs = db.query(PushSubscription).filter_by(member_id=booking.member_id).all()
-            # Mark notified even if no subscriptions so we don't re-check every minute
-            booking.preheat_notified_at = now
-
-            dead_endpoints = []
-            for sub in subs:
-                start_12h = booking.start_time.strftime("%I:%M %p").lstrip("0")
-                result = _send_push(
-                    {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
-                    {
-                        "title": "🔥 Time to preheat!",
-                        "body": f"Your session starts at {start_12h}. Head over and start preheating now.",
-                        "tag": f"preheat-{booking.id}",
-                        "url": "/",
-                        "bookingId": booking.id,
-                    },
-                )
-                if result is True:
-                    logger.info(
-                        "Preheat reminder sent for booking %d (member_id=%d)",
-                        booking.id,
-                        booking.member_id,
-                    )
-                elif result == 410:
-                    dead_endpoints.append(sub.endpoint)
-
-            for ep in dead_endpoints:
-                db.query(PushSubscription).filter_by(endpoint=ep).delete()
-
-            db.commit()
-
-
 def check_session_ending():
     """Send a push notification to the session owner 15 minutes before their booking ends."""
     if not VAPID_PRIVATE_KEY:
@@ -1025,33 +1047,21 @@ def check_session_ending():
                 db.commit()
                 continue
 
-            subs = db.query(PushSubscription).filter_by(member_id=booking.member_id).all()
             booking.session_ending_notified_at = now
-
-            dead_endpoints = []
-            for sub in subs:
-                end_fmt = booking.end_time.strftime("%I:%M %p").lstrip("0")
-                result = _send_push(
-                    {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
-                    {
-                        "title": "⏱️ 15 minutes left!",
-                        "body": f"Your session ends at {end_fmt}. Head to Controls to extend if needed.",
-                        "tag": f"session-ending-{booking.id}",
-                        "url": "/?tab=controls",
-                    },
-                )
-                if result is True:
-                    logger.info(
-                        "Session-ending reminder sent for booking %d (member_id=%d)",
-                        booking.id,
-                        booking.member_id,
-                    )
-                elif result == 410:
-                    dead_endpoints.append(sub.endpoint)
-
-            for ep in dead_endpoints:
-                db.query(PushSubscription).filter_by(endpoint=ep).delete()
-
+            end_fmt = booking.end_time.strftime("%I:%M %p").lstrip("0")
+            _notify_member(booking.member_id, {
+                "title": "⏱️ 15 minutes left!",
+                "body": f"Your session ends at {end_fmt}. Extend or wind down.",
+                "tag": f"session-ending-{booking.id}",
+                "thread_id": "session-ending",
+                "interruption_level": "time-sensitive",
+                "url": "/?tab=controls",
+                "bookingId": booking.id,
+            })
+            logger.info(
+                "Session-ending reminder dispatched for booking %d (member_id=%d)",
+                booking.id, booking.member_id,
+            )
             db.commit()
 
 
@@ -1145,7 +1155,8 @@ def push_live_activity_updates():
 
 scheduler = BackgroundScheduler(daemon=True)
 scheduler.add_job(check_and_auto_shutoff,    "interval", seconds=60,  id="auto_shutoff")
-scheduler.add_job(check_preheat_reminders,   "interval", seconds=60,  id="preheat_reminders")
+# Preheat reminders removed: Live Activity carries the session on the Lock Screen
+# and Dynamic Island, and the family preferred fewer proactive alerts.
 scheduler.add_job(check_session_ending,      "interval", seconds=60,  id="session_ending")
 scheduler.add_job(refresh_harvia_token,      "interval", minutes=30,  id="token_refresh")
 scheduler.add_job(log_device_state,          "interval", seconds=60,  id="device_state_log")
@@ -2329,45 +2340,29 @@ def push_unsubscribe():
 
 @app.route("/api/push/test", methods=["POST"])
 def push_test():
-    """Send a test push notification to the current user. Useful for verifying the setup end-to-end."""
+    """Send a test notification via whichever transport is available (APNS or Web Push)."""
     db, member, error = require_auth()
     if error:
         return error
     try:
-        if not VAPID_PRIVATE_KEY:
-            return err("VAPID_PRIVATE_KEY is not configured on the server")
+        has_apns = (
+            db.query(NativeDevice)
+            .filter(NativeDevice.member_id == member.id, NativeDevice.apns_token.isnot(None))
+            .first() is not None
+        )
+        has_web = db.query(PushSubscription).filter_by(member_id=member.id).first() is not None
+        if not has_apns and not has_web:
+            return err("No notification transport found — enable notifications first")
 
-        subs = db.query(PushSubscription).filter_by(member_id=member.id).all()
-        if not subs:
-            return err("No push subscriptions found for your account — enable notifications first")
-
-        sent, failed, dead = 0, 0, []
-        for sub in subs:
-            result = _send_push(
-                {"endpoint": sub.endpoint, "keys": {"p256dh": sub.p256dh, "auth": sub.auth}},
-                {
-                    "title": "🛖 Sweat Box test",
-                    "body": f"Hey {member.name}! Push notifications are working.",
-                    "tag": "push-test",
-                    "url": "/",
-                },
-            )
-            if result is True:
-                sent += 1
-            elif result == 410:
-                dead.append(sub.endpoint)
-                failed += 1
-            else:
-                failed += 1
-
-        for ep in dead:
-            db.query(PushSubscription).filter_by(endpoint=ep).delete()
-        if dead:
-            db.commit()
-
-        if sent == 0:
-            return err(f"Notification delivery failed on all {failed} subscription(s) — check server logs"), 502
-        return jsonify({"ok": True, "sent": sent, "failed": failed})
+        _notify_member(member.id, {
+            "title": "🛖 Sweat Box test",
+            "body": f"Hey {member.name}! Push notifications are working.",
+            "tag": "push-test",
+            "thread_id": "test",
+            "url": "/",
+        })
+        transport = "apns" if has_apns else "webpush"
+        return jsonify({"ok": True, "transport": transport})
     finally:
         db.close()
 

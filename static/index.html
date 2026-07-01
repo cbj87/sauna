@@ -225,6 +225,14 @@ const NativeBridge = (() => {
     console.debug('Push-to-start token from native', event.detail);
     uploadNativePayload('/api/native/live-activity/push-to-start-token', event.detail || {});
   });
+  // Regular APNs device token (for alert notifications, not Live Activities).
+  // Server stores it on NativeDevice.apns_token and prefers it over Web Push.
+  window.addEventListener('device-token', event => {
+    const token = (event.detail || {}).token;
+    if (!token) return;
+    console.debug('APNs device token from native');
+    uploadNativePayload('/api/native/device-token', { apnsToken: token });
+  });
   // Forward status events (push-token-failed, started, ended, …) to the server
   // so we can diagnose why a token never arrived from the device side.
   window.addEventListener('live-activity-status', event => {
@@ -1035,7 +1043,7 @@ function SettingsPanel({
           <div>
             <div className="text-sm font-semibold text-white">Notifications</div>
             <div className="mt-0.5 text-xs text-gray-500">
-              {notifState === 'unsupported' ? 'Not supported on this device' : isSubscribed ? 'Enabled on this device' : 'Preheat and session alerts'}
+              {notifState === 'unsupported' ? 'Not supported on this device' : isSubscribed ? 'Enabled on this device' : 'Session and safety alerts'}
             </div>
           </div>
           <div className="flex justify-end">
@@ -1045,7 +1053,6 @@ function SettingsPanel({
             </button>
           </div>
         </div>
-        <ToggleRow title="Preheat reminders" subtitle="35 min before your session starts" checked={notifPrefs.preheat !== false} onChange={v => onPrefChange('preheat', v)} disabled={!isSubscribed} />
         <ToggleRow title="Session ending soon" subtitle="15 min before your session ends" checked={notifPrefs.session_ending !== false} onChange={v => onPrefChange('session_ending', v)} disabled={!isSubscribed} />
       </div>
 
@@ -3167,14 +3174,6 @@ function NotificationsPanel({ onClose, notifState, notifLoading, vapidKey, onSub
 
                 <div className="flex items-center justify-between gap-4">
                   <div>
-                    <p className="text-sm font-medium">Preheat reminders</p>
-                    <p className="text-xs text-gray-400 mt-0.5">35 min before your session starts</p>
-                  </div>
-                  <Toggle checked={notifPrefs.preheat !== false} onChange={v => onPrefChange('preheat', v)} />
-                </div>
-
-                <div className="flex items-center justify-between gap-4">
-                  <div>
                     <p className="text-sm font-medium">Session ending soon</p>
                     <p className="text-xs text-gray-400 mt-0.5">15 min before your session ends</p>
                   </div>
@@ -3421,7 +3420,7 @@ function MainApp({ currentMember, onLogout }) {
         body: { endpoint: subJson.endpoint, p256dh: subJson.keys.p256dh, auth: subJson.keys.auth },
       });
       setNotifState('subscribed');
-      toast('Preheat reminders on!', 'success');
+      toast('Notifications enabled!', 'success');
     } catch(e) {
       toast('Could not update notification settings', 'error');
     } finally {
