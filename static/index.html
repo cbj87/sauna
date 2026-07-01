@@ -227,11 +227,17 @@ const NativeBridge = (() => {
   });
   // Regular APNs device token (for alert notifications, not Live Activities).
   // Server stores it on NativeDevice.apns_token and prefers it over Web Push.
+  // `environment` (sandbox|production) tells the server which APNs host is
+  // valid for this token — dev builds get sandbox tokens, TestFlight/App Store
+  // get production tokens, and they're NOT interchangeable.
   window.addEventListener('device-token', event => {
-    const token = (event.detail || {}).token;
-    if (!token) return;
-    console.debug('APNs device token from native');
-    uploadNativePayload('/api/native/device-token', { apnsToken: token });
+    const detail = event.detail || {};
+    if (!detail.token) return;
+    console.debug('APNs device token from native', { environment: detail.environment });
+    uploadNativePayload('/api/native/device-token', {
+      apnsToken: detail.token,
+      apnsEnvironment: detail.environment,
+    });
   });
   // Forward status events (push-token-failed, started, ended, …) to the server
   // so we can diagnose why a token never arrived from the device side.

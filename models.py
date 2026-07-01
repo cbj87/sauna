@@ -181,6 +181,10 @@ class NativeDevice(Base):
     member_id = Column(Integer, ForeignKey("family_members.id", ondelete="CASCADE"), nullable=False)
     native_device_id = Column(String, unique=True, nullable=False)
     apns_token = Column(Text, nullable=True)
+    # "sandbox" (dev/Xcode) or "production" (TestFlight/App Store). Set from
+    # the client at token-registration time — sandbox and production tokens
+    # come from different APNs infrastructures and are not interchangeable.
+    apns_environment = Column(String, default="production")
     platform = Column(String, default="ios")
     app_version = Column(String, nullable=True)
     last_seen_at = Column(DateTime, default=datetime.utcnow)
@@ -256,6 +260,7 @@ def _migrate_db():
         "ALTER TABLE family_members ADD COLUMN reset_token TEXT",
         "ALTER TABLE family_members ADD COLUMN reset_token_expires DATETIME",
         "ALTER TABLE family_members ADD COLUMN live_activity_all_sessions INTEGER DEFAULT 0",
+        "ALTER TABLE native_devices ADD COLUMN apns_environment TEXT DEFAULT 'production'",
     ]
     with engine.connect() as conn:
         for stmt in migrations:

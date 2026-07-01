@@ -13,7 +13,7 @@
 | Database | SQLite (WAL mode), SQLAlchemy 2.0+ |
 | Auth | Email/password, bcrypt, Flask sessions, CSRF tokens |
 | Frontend | React 18 (CDN), Tailwind CSS (CDN), inline Babel |
-| Push | VAPID Web Push (pywebpush) |
+| Push | APNs (native app, preferred) + VAPID Web Push (fallback) |
 | Scheduling | APScheduler (60s jobs) |
 | Hardware | Harvia MyHarvia GraphQL API via Cognito SRP auth |
 | Deployment | Railway, Gunicorn (1 worker, 4 threads) |
@@ -59,6 +59,11 @@ HARVIA_DEVICE_ID=<uuid>
 VAPID_PRIVATE_KEY=<base64>             # Generate: python generate_vapid_keys.py
 VAPID_PUBLIC_KEY=<base64>
 VAPID_CLAIMS_EMAIL=<email>
+APNS_KEY_ID=<10-char key id>           # APNs auth key (dev portal → Keys)
+APNS_TEAM_ID=<10-char team id>
+APNS_PRIVATE_KEY=<-----BEGIN PRIVATE KEY----- …>
+APNS_BUNDLE_ID=dev.cbj87.SweatBox
+APNS_USE_SANDBOX=1                     # Legacy fallback for device rows without apns_environment
 DB_PATH=/data/sweatbox.db              # Railway volume path; defaults to ./sweatbox.db
 PORT=5000
 RESEND_API_KEY=<resend-api-key>        # Required for password reset emails
@@ -103,11 +108,21 @@ APP_URL=https://sweatbox.cbj87.dev     # Used in password reset link emails
 - **User**: own bookings + sauna controls (subject to `max_temp` limit if set by admin)
 - First signup is auto-approved as admin; subsequent signups require admin approval
 
+### Notifications
+- **Two transports**: APNs (native iOS app) is preferred; Web Push (VAPID/pywebpush) is the fallback for browser-only users. Members get one or the other, never both.
+- `_notify_admins(payload, pref_key=None)` / `_notify_member(member_id, payload)` are the entry points; both go through `_dispatch_alert_to_member`, which picks APNs when the member has a `NativeDevice.apns_token`.
+- **APNs environment per device**: sandbox tokens (dev/Xcode builds) and production tokens (TestFlight/App Store) come from different Apple infrastructures and are NOT interchangeable. The iOS app reports its build env (`#if DEBUG` → sandbox, else production) alongside the token; the server stores it on `NativeDevice.apns_environment` and picks the APNs host per-send via `_apns_host_for()`. Sending to the wrong host returns `BadDeviceToken` and the notification is silently dropped.
+- `APNS_USE_SANDBOX` env var is now a **fallback default only** — used for legacy device rows that predate per-device env tracking. New device registrations always specify env.
+- Stale APNs tokens are only cleared on 410 `Unregistered` or 400 with a token-specific reason (`BadDeviceToken` / `DeviceTokenNotForTopic` / `ExpiredProviderToken`) — payload/server bugs (400 `MissingTopic`, etc.) do NOT nuke the token.
+- Time-sensitive alerts (`interruption_level="time-sensitive"`) break through Focus modes — used for the auto-shutoff failsafe and session-ending reminders.
+- On sign-out, `/api/auth/logout` accepts a `nativeDeviceId` and deletes the `NativeDevice` row (cascades to Live Activity tokens) so the previous member's pushes stop hitting the phone.
+
 ### Background Jobs (APScheduler, every 60s)
-1. `check_and_auto_shutoff()` — advance booking states, turn off sauna when session ends
-2. `check_preheat_reminders()` — push notification 35 min before session start
-3. `check_session_ending()` — push notification 15 min before session end
-4. `refresh_harvia_token()` — proactive Cognito token refresh (every 30 min)
+1. `check_and_auto_shutoff()` — advance booking states, turn off sauna when session ends; sends CRITICAL alert if shut-off fails
+2. `check_session_ending()` — push notification 15 min before session end (time-sensitive)
+3. `refresh_harvia_token()` — proactive Cognito token refresh (every 30 min)
+4. `log_device_state()` — poll Harvia device state for timeseries observability
+5. `push_live_activity_updates()` — push Live Activity content updates to iOS devices
 
 ---
 

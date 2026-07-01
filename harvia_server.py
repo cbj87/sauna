@@ -281,7 +281,49 @@ def _get_apns_http_client():
         return _apns_http_client
 
 
-def _send_live_activity_apns(token: str, payload: dict) -> tuple[bool, int | None, str | None]:
+def _device_env_map(db, native_device_ids) -> dict[str, str | None]:
+    """Return {native_device_id: apns_environment} for the given devices.
+
+    Live Activity token tables only store native_device_id (not the env directly),
+    so this one lookup lets each token pick the right APNs host per device.
+    """
+    ids = [d for d in (native_device_ids or []) if d]
+    if not ids:
+        return {}
+    rows = (
+        db.query(NativeDevice.native_device_id, NativeDevice.apns_environment)
+        .filter(NativeDevice.native_device_id.in_(ids))
+        .all()
+    )
+    return {ndid: env for ndid, env in rows}
+
+
+def _apns_host_for(environment: str | None) -> str:
+    """Pick the APNs endpoint for a given device environment.
+
+    A device token issued to a dev/Xcode build (sandbox) is only valid against
+    api.sandbox.push.apple.com; a token issued to a TestFlight/App Store build
+    (production) is only valid against api.push.apple.com. The two systems are
+    parallel and tokens are NOT interchangeable — sending to the wrong host
+    returns BadDeviceToken and the notification is silently dropped.
+
+    Falls back to the legacy APNS_USE_SANDBOX env for old device rows that
+    predate per-device environment tracking.
+    """
+    env = (environment or "").strip().lower()
+    if env == "sandbox":
+        return "api.sandbox.push.apple.com"
+    if env == "production":
+        return "api.push.apple.com"
+    return "api.sandbox.push.apple.com" if APNS_USE_SANDBOX else "api.push.apple.com"
+
+
+def _send_live_activity_apns(
+    token: str,
+    payload: dict,
+    *,
+    environment: str | None = None,
+) -> tuple[bool, int | None, str | None]:
     """Send one ActivityKit APNs payload over HTTP/2.
 
     Returns (ok, status_code, response_body). Missing APNs config is a soft failure.
@@ -289,7 +331,7 @@ def _send_live_activity_apns(token: str, payload: dict) -> tuple[bool, int | Non
     if not _apns_is_configured():
         return False, None, "APNs is not configured"
 
-    host = "api.sandbox.push.apple.com" if APNS_USE_SANDBOX else "api.push.apple.com"
+    host = _apns_host_for(environment)
     url = f"https://{host}/3/device/{token}"
     headers = {
         "authorization": f"bearer {_apns_jwt()}",
@@ -351,6 +393,7 @@ def _send_apns_alert(
     interruption_level: str = "active",
     thread_id: str | None = None,
     extras: dict | None = None,
+    environment: str | None = None,
 ) -> tuple[bool, int | None, str | None]:
     """Send an APNs alert-type push (regular banner notification, not a Live Activity).
 
@@ -358,12 +401,15 @@ def _send_apns_alert(
     whether iOS respects Focus modes and how prominently the alert renders. Use
     "time-sensitive" for safety alerts like the auto-shutoff failsafe.
 
+    environment: "sandbox" or "production" — which APNs endpoint the device's
+    token was issued for. Unset falls back to APNS_USE_SANDBOX default.
+
     Returns (ok, status_code, response_body). Missing APNs config is a soft failure.
     """
     if not _apns_is_configured():
         return False, None, "APNs is not configured"
 
-    host = "api.sandbox.push.apple.com" if APNS_USE_SANDBOX else "api.push.apple.com"
+    host = _apns_host_for(environment)
     url = f"https://{host}/3/device/{token}"
     headers = {
         "authorization": f"bearer {_apns_jwt()}",
@@ -460,6 +506,7 @@ def _dispatch_alert_to_member(db, member_id: int, payload: dict) -> dict:
                 collapse_id=tag,
                 interruption_level=interruption_level,
                 thread_id=thread_id,
+                environment=device.apns_environment,
                 # Ride-along fields let the app deep-link or handle the tap.
                 extras={
                     k: v for k, v in payload.items()
@@ -678,6 +725,7 @@ def _push_live_activity_start_to_tokens(
     if not tokens or not _apns_is_configured():
         return result
 
+    device_env = _device_env_map(db, [t.native_device_id for t in tokens])
     for token_row in tokens:
         payload = _live_activity_start_payload(
             content_state,
@@ -685,7 +733,10 @@ def _push_live_activity_start_to_tokens(
             alert_title=alert_title,
             alert_body=alert_body,
         )
-        ok, status_code, body = _send_live_activity_apns(token_row.token, payload)
+        ok, status_code, body = _send_live_activity_apns(
+            token_row.token, payload,
+            environment=device_env.get(token_row.native_device_id),
+        )
         if ok:
             result["sent"] += 1
             continue
@@ -771,8 +822,12 @@ def _push_live_activity_to_tokens(
     payload = {"aps": aps}
 
     deleted = 0
+    device_env = _device_env_map(db, [t.native_device_id for t in tokens])
     for token_row in tokens:
-        ok, status_code, body = _send_live_activity_apns(token_row.token, payload)
+        ok, status_code, body = _send_live_activity_apns(
+            token_row.token, payload,
+            environment=device_env.get(token_row.native_device_id),
+        )
         if ok:
             continue
         is_stale = status_code in (400, 410) and isinstance(body, str) and (
@@ -2483,6 +2538,12 @@ def _upsert_native_device(db, member: FamilyMember, body: dict) -> NativeDevice 
     apns_token = (body.get("apnsToken") or body.get("apns_token") or "").strip()
     if apns_token:
         device.apns_token = apns_token
+    # Client is authoritative: only accept "sandbox" or "production" and default
+    # to production when unset — dev builds MUST tell us they're sandbox or the
+    # token will bounce off the wrong APNs endpoint with BadDeviceToken.
+    apns_env = (body.get("apnsEnvironment") or body.get("apns_environment") or "").strip().lower()
+    if apns_env in ("sandbox", "production"):
+        device.apns_environment = apns_env
     device.last_seen_at = datetime.utcnow()
     # Flush so the parent row lands before any child token rows reference it.
     # SQLAlchemy's flush ordering wasn't placing the NativeDevice INSERT before
@@ -2659,13 +2720,18 @@ def admin_test_live_activity_push():
     try:
         body = request.get_json(silent=True) or {}
         token = (body.get("token") or "").strip()
-        if not token:
+        environment: str | None = None
+        if token:
+            environment = (body.get("environment") or body.get("apnsEnvironment") or "").strip().lower() or None
+        else:
             stored = (
                 db.query(LiveActivityToken)
                 .order_by(LiveActivityToken.updated_at.desc())
                 .first()
             )
             token = stored.token if stored else ""
+            if stored and stored.native_device_id:
+                environment = _device_env_map(db, [stored.native_device_id]).get(stored.native_device_id)
         if not token:
             return err("No Live Activity token available")
 
@@ -2688,7 +2754,7 @@ def admin_test_live_activity_push():
                 "content-state": state,
             }
         }
-        ok, status_code, response_body = _send_live_activity_apns(token, payload)
+        ok, status_code, response_body = _send_live_activity_apns(token, payload, environment=environment)
         if not ok:
             return err(response_body or "Live Activity push failed", status_code or 502)
         return jsonify({"ok": True, "status": status_code})

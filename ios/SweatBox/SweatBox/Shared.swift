@@ -76,5 +76,20 @@ struct LiveActivityStatusPayload: Codable {
 
 struct RemoteNotificationTokenPayload: Codable {
     let token: String
+    /// "sandbox" for dev/Xcode builds, "production" for TestFlight/App Store.
+    /// APNs sandbox and production run parallel infrastructures; a token is
+    /// only valid against the environment that issued it. The server needs
+    /// this to pick the right APNs host per-device.
+    let environment: String
     let updatedAtMillis: Int64
+}
+
+enum APNsEnvironment {
+    static var current: String {
+        #if DEBUG
+        return "sandbox"
+        #else
+        return "production"
+        #endif
+    }
 }

@@ -50,6 +50,7 @@ final class WebBridge: NSObject, ObservableObject, WKScriptMessageHandler {
             // repostCachedTokens().
             cachedRemoteNotificationToken = RemoteNotificationTokenPayload(
                 token: cached,
+                environment: APNsEnvironment.current,
                 updatedAtMillis: Int64(Date().timeIntervalSince1970 * 1000)
             )
         }
@@ -110,6 +111,7 @@ final class WebBridge: NSObject, ObservableObject, WKScriptMessageHandler {
     func dispatchRemoteNotificationToken(_ token: String) {
         let payload = RemoteNotificationTokenPayload(
             token: token,
+            environment: APNsEnvironment.current,
             updatedAtMillis: Int64(Date().timeIntervalSince1970 * 1000)
         )
         cachedRemoteNotificationToken = payload
