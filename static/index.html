@@ -2823,11 +2823,41 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
 
   const pending = data.members.filter(m => m.status === 'pending');
   const approved = data.members.filter(m => m.status === 'approved');
+  const me = data.members.find(m => m.id === currentMember.id) || currentMember;
+  const allSessionLiveActivities = !!me?.live_activity_all_sessions;
+
+  async function toggleAllSessionLiveActivities() {
+    setBusy(true);
+    setLiveActivityMessage('');
+    try {
+      const next = !allSessionLiveActivities;
+      await api(`/api/members/${currentMember.id}/notification-prefs`, {
+        method: 'PUT',
+        body: { live_activity_all_sessions: next },
+      });
+      setLiveActivityMessage(next
+        ? 'Live Activities for all sessions enabled on your admin account.'
+        : 'Live Activities for all sessions disabled.');
+      await load();
+    }
+    catch(e) { setLiveActivityMessage(e.message); }
+    finally { setBusy(false); }
+  }
 
   return (
     <div className="space-y-5">
       <div className="bg-gray-800 rounded-2xl p-5">
         <h2 className="font-bold text-base mb-4">Live Activities</h2>
+        <div className="mb-4 flex items-center justify-between gap-4 rounded-xl bg-gray-700/50 px-4 py-3">
+          <div>
+            <p className="text-sm font-semibold text-white">All family sessions</p>
+            <p className="mt-0.5 text-xs text-gray-400">Show Live Activities for sessions started by anyone</p>
+          </div>
+          <button onClick={toggleAllSessionLiveActivities} disabled={busy}
+            className={`relative h-7 w-12 rounded-full transition-colors disabled:opacity-40 ${allSessionLiveActivities ? 'bg-orange-500' : 'bg-gray-600'}`}>
+            <span className={`absolute top-1 h-5 w-5 rounded-full bg-white transition-transform ${allSessionLiveActivities ? 'translate-x-5' : 'translate-x-1'}`} />
+          </button>
+        </div>
         <button onClick={startCurrentLiveActivities} disabled={busy}
           className="w-full py-3 rounded-xl font-bold text-white bg-orange-500 hover:bg-orange-400 disabled:opacity-50">
           Start current session Live Activity

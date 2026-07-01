@@ -222,18 +222,24 @@ final class ActivityManager {
     private func observePushToStartTokens() {
         guard #available(iOS 17.2, *) else { return }
 
+        if let tokenData = Activity<SaunaActivityAttributes>.pushToStartToken {
+            emitPushToStartToken(tokenData)
+        }
+
         pushToStartTask = Task { [weak self] in
             for await tokenData in Activity<SaunaActivityAttributes>.pushToStartTokenUpdates {
-                let payload = PushToStartTokenPayload(
-                    token: tokenData.hexString,
-                    updatedAtMillis: Int64(Date().timeIntervalSince1970 * 1000)
-                )
-                await MainActor.run {
-                    self?.cachedPushToStartToken = payload
-                    self?.onPushToStartToken?(payload)
-                }
+                await MainActor.run { self?.emitPushToStartToken(tokenData) }
             }
         }
+    }
+
+    private func emitPushToStartToken(_ tokenData: Data) {
+        let payload = PushToStartTokenPayload(
+            token: tokenData.hexString,
+            updatedAtMillis: Int64(Date().timeIntervalSince1970 * 1000)
+        )
+        cachedPushToStartToken = payload
+        onPushToStartToken?(payload)
     }
 
     private func sendStatus(status: String, activityId: String? = nil, bookingId: Int?, message: String?) {
