@@ -562,19 +562,26 @@ def _notify_admins(payload: dict, pref_key: str | None = None) -> None:
         logger.error("Failed to send admin notifications: %s", exc)
 
 
-def _notify_member(member_id: int, payload: dict) -> None:
-    """Alert a specific member. Prefers APNS; falls back to Web Push. Never raises."""
+def _notify_member(member_id: int, payload: dict, pref_key: str | None = None) -> None:
+    """Alert a specific member. Prefers APNS; falls back to Web Push. Never raises.
+
+    pref_key: if set, skip when the member has this key = false in their
+    notification_prefs. Keeps opt-out honoured at the helper so new call sites
+    can't accidentally bypass user preferences.
+    """
     try:
         with SessionLocal() as db:
+            if pref_key is not None:
+                member = db.query(FamilyMember).filter_by(id=member_id).first()
+                if not member:
+                    return
+                prefs = member.get_notification_prefs()
+                if not prefs.get(pref_key, True):
+                    return
             _dispatch_alert_to_member(db, member_id, payload)
             db.commit()
     except Exception as exc:
         logger.error("Failed to send member notification: %s", exc)
-
-
-# Backwards-compat aliases — older call sites can be migrated incrementally.
-_notify_admins_push = _notify_admins
-_notify_member_push = _notify_member
 
 
 def get_harvia() -> HarviaClient:
@@ -1312,7 +1319,7 @@ def signup():
         if is_first:
             return jsonify({"ok": True, "status": "approved", "member": member.to_dict(), "csrf_token": csrf}), 201
 
-        _notify_admins_push({
+        _notify_admins({
             "title": "👤 New signup",
             "body": f"{name} wants to join — approve them in the Admin tab.",
             "tag": f"signup-{member.id}",
@@ -1601,7 +1608,7 @@ def admin_approve_member(member_id: int):
             member.max_temp = int(raw) if raw is not None else None
         db.commit()
         approved_id = member.id
-        _notify_member_push(approved_id, {
+        _notify_member(approved_id, {
             "title": "✅ You're approved!",
             "body": "Your Sweat Box account has been approved. Log in to get started.",
             "tag": "account-approved",
@@ -1966,7 +1973,7 @@ def sauna_on():
                           notes=json.dumps({"target_f": c_to_f(target_c)}))
         if booking_id is not None:
             _fanout_live_activity_start(booking_id, exclude_native_device_id=native_device_id)
-        _notify_admins_push({
+        _notify_admins({
             "title": "🔥 Sauna is on",
             "body": f"{mname} started a session — {c_to_f(target_c)}°F ({target_c}°C) for {on_time} min.",
             "tag": "sauna-on",
@@ -1995,7 +2002,7 @@ def sauna_off():
         _log_sauna_action(mid, mname, "off")
         if running_booking_id is not None:
             _fanout_live_activity_end(running_booking_id, reason="manual-off")
-        _notify_admins_push({
+        _notify_admins({
             "title": "❄️ Sauna turned off",
             "body": f"Turned off by {mname}.",
             "tag": "sauna-off",
@@ -2315,7 +2322,7 @@ def apply_preset(name: str):
         _log_sauna_action(mid, mname, "preset", target_temp=p_temp, on_time=p_time, preset_name=p_name)
         if booking_id is not None:
             _fanout_live_activity_start(booking_id, exclude_native_device_id=native_device_id)
-        _notify_admins_push({
+        _notify_admins({
             "title": "🔥 Sauna is on",
             "body": f"{mname} started '{p_name}' — {c_to_f(p_temp)}°F ({p_temp}°C) for {p_time} min.",
             "tag": "sauna-on",
@@ -2400,7 +2407,7 @@ def update_notification_prefs(member_id: int):
             return err("Member not found", 404)
         # Merge new prefs over existing ones
         prefs = target.get_notification_prefs()
-        for key in ("preheat", "session_ending", "sauna_control", "signup", "booking", "approval"):
+        for key in ("session_ending", "sauna_control", "signup", "booking", "approval"):
             if key in body:
                 prefs[key] = bool(body[key])
         if "live_activity_all_sessions" in body:
@@ -2922,7 +2929,7 @@ def create_booking():
             weekday = booking_date.strftime("%a")
             start_fmt = start.strftime("%I:%M %p").lstrip("0")
             end_fmt = end.strftime("%I:%M %p").lstrip("0")
-            _notify_admins_push({
+            _notify_admins({
                 "title": "📅 New booking",
                 "body": f"{member.name} booked {weekday} {day} {month}, {start_fmt}–{end_fmt}",
                 "tag": f"booking-new-{booking.id}",
@@ -3043,8 +3050,6 @@ def edit_booking(booking_id: int):
         booking.end_time   = end
         booking.on_time    = on_time
         booking.target_temp = target_temp
-        # Reset preheat notification so it re-fires at the new time
-        booking.preheat_notified_at = None
         db.commit()
         db.refresh(booking)
         if not member.is_admin:
@@ -3053,7 +3058,7 @@ def edit_booking(booking_id: int):
             weekday = new_date.strftime("%a")
             start_fmt = start.strftime("%I:%M %p").lstrip("0")
             end_fmt = end.strftime("%I:%M %p").lstrip("0")
-            _notify_admins_push({
+            _notify_admins({
                 "title": "✏️ Booking updated",
                 "body": f"{member.name}'s booking on {weekday} {day} {month} moved to {start_fmt}–{end_fmt}",
                 "tag": f"booking-edit-{booking.id}",
@@ -3110,7 +3115,7 @@ def preheat_booking(booking_id: int):
         booking.status = "preheating"
         db.commit()
         booking_id = booking.id
-        _notify_admins_push({
+        _notify_admins({
             "title": "🔥 Sauna is preheating",
             "body": f"{member.name} started preheat — {c_to_f(b_temp)}°F ({b_temp}°C) for {b_time} min.",
             "tag": "sauna-on",

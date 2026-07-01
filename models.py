@@ -117,7 +117,6 @@ class Booking(Base):
     on_time = Column(Integer)       # minutes
     # scheduled | preheating | active | completed | cancelled
     status = Column(String, default="scheduled")
-    preheat_notified_at = Column(DateTime, nullable=True)
     session_ending_notified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -252,7 +251,6 @@ def _migrate_db():
     """Add columns/tables that SQLAlchemy's create_all won't add to existing tables."""
     migrations = [
         "ALTER TABLE family_members ADD COLUMN max_temp INTEGER",
-        "ALTER TABLE bookings ADD COLUMN preheat_notified_at DATETIME",
         "ALTER TABLE family_members ADD COLUMN notification_prefs TEXT",
         "ALTER TABLE bookings ADD COLUMN session_ending_notified_at DATETIME",
         "ALTER TABLE family_members ADD COLUMN email TEXT",
