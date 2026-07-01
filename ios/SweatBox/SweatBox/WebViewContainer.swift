@@ -128,5 +128,57 @@ struct WebViewContainer: UIViewRepresentable {
             }
             return nil
         }
+
+        func webView(
+            _ webView: WKWebView,
+            runJavaScriptAlertPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping () -> Void
+        ) {
+            presentJavaScriptDialog(
+                title: webView.url?.host ?? "Sweat Box",
+                message: message,
+                actions: [UIAlertAction(title: "OK", style: .default) { _ in completionHandler() }],
+                fallback: completionHandler
+            )
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            runJavaScriptConfirmPanelWithMessage message: String,
+            initiatedByFrame frame: WKFrameInfo,
+            completionHandler: @escaping (Bool) -> Void
+        ) {
+            presentJavaScriptDialog(
+                title: webView.url?.host ?? "Sweat Box",
+                message: message,
+                actions: [
+                    UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) },
+                    UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) },
+                ],
+                fallback: { completionHandler(false) }
+            )
+        }
+
+        private func presentJavaScriptDialog(
+            title: String,
+            message: String,
+            actions: [UIAlertAction],
+            fallback: @escaping () -> Void
+        ) {
+            guard let presenter = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .flatMap({ $0.windows })
+                .first(where: { $0.isKeyWindow })?
+                .rootViewController
+            else {
+                fallback()
+                return
+            }
+
+            let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            actions.forEach(alert.addAction)
+            presenter.present(alert, animated: true)
+        }
     }
 }

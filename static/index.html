@@ -2705,6 +2705,7 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
   const [setCredsPass, setSetCredsPass]       = useState('');
   const [setCredsConfirm, setSetCredsConfirm] = useState('');
   const [setCredsError, setSetCredsError]     = useState('');
+  const [liveActivityMessage, setLiveActivityMessage] = useState('');
 
   async function load() {
     try { setData(await api('/api/admin/members')); } catch {}
@@ -2802,13 +2803,14 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
 
   async function startCurrentLiveActivities() {
     setBusy(true);
+    setLiveActivityMessage('');
     try {
       const res = await api('/api/admin/native/live-activity/start-current', {
         method: 'POST',
       });
-      alert(`Live Activity start sent to ${res.sent} device${res.sent === 1 ? '' : 's'}.`);
+      setLiveActivityMessage(`Sent to ${res.sent} device${res.sent === 1 ? '' : 's'} (${res.tokens} eligible token${res.tokens === 1 ? '' : 's'}).`);
     }
-    catch(e) { alert(e.message); }
+    catch(e) { setLiveActivityMessage(e.message); }
     finally { setBusy(false); }
   }
 
@@ -2825,6 +2827,7 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
           className="w-full py-3 rounded-xl font-bold text-white bg-orange-500 hover:bg-orange-400 disabled:opacity-50">
           Start current session Live Activity
         </button>
+        {liveActivityMessage && <p className="mt-3 text-center text-xs text-gray-400">{liveActivityMessage}</p>}
       </div>
 
       {pending.length > 0 && (
