@@ -11,17 +11,20 @@ final class ActivityManager {
     private var lastState: SaunaActivityAttributes.ContentState?
     private var tokenTasks: [String: Task<Void, Never>] = [:]
     private var pushToStartTask: Task<Void, Never>?
+    private var activityUpdatesTask: Task<Void, Never>?
     private var cachedLiveActivityToken: LiveActivityTokenPayload?
     private var cachedPushToStartToken: PushToStartTokenPayload?
 
     init() {
         reattachToExistingActivity()
+        observeActivityUpdates()
         observePushToStartTokens()
     }
 
     deinit {
         tokenTasks.values.forEach { $0.cancel() }
         pushToStartTask?.cancel()
+        activityUpdatesTask?.cancel()
     }
 
     func startSession(_ payload: SaunaSessionPayload, nativeDeviceId: String) {
@@ -198,6 +201,19 @@ final class ActivityManager {
                 await MainActor.run {
                     self?.cachedLiveActivityToken = payload
                     self?.onLiveActivityToken?(payload)
+                }
+            }
+        }
+    }
+
+    private func observeActivityUpdates() {
+        activityUpdatesTask = Task { [weak self] in
+            for await activity in Activity<SaunaActivityAttributes>.activityUpdates {
+                await MainActor.run {
+                    self?.currentActivity = activity
+                    self?.lastState = activity.content.state
+                    self?.observePushTokenUpdates(for: activity)
+                    self?.sendStatus(status: "adopted", activityId: activity.id, bookingId: activity.content.state.bookingId, message: nil)
                 }
             }
         }

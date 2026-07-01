@@ -312,6 +312,36 @@ def _send_live_activity_apns(token: str, payload: dict) -> tuple[bool, int | Non
         return False, None, str(exc)
 
 
+def _live_activity_attributes(native_device_id: str = "") -> dict:
+    return {
+        "nativeDeviceId": native_device_id,
+        "createdAtMillis": int(_time.time() * 1000),
+    }
+
+
+def _live_activity_start_payload(
+    content_state: dict,
+    native_device_id: str = "",
+    alert_title: str = "Sauna is on",
+    alert_body: str = "A sauna session is running.",
+) -> dict:
+    return {
+        "aps": {
+            "timestamp": int(_time.time()),
+            "event": "start",
+            "attributes-type": "SaunaActivityAttributes",
+            "attributes": _live_activity_attributes(native_device_id),
+            "content-state": content_state,
+            "input-push-token": 1,
+            "alert": {
+                "title": alert_title,
+                "body": alert_body,
+                "sound": "default",
+            },
+        }
+    }
+
+
 def _notify_admins_push(payload: dict, pref_key: str | None = None) -> None:
     """Send a push notification to admin subscribers who have opted in.
 
@@ -479,6 +509,106 @@ def _live_activity_recipient_tokens(db, booking: Booking) -> list[LiveActivityTo
         .filter(LiveActivityToken.member_id.in_(eligible_member_ids))
         .all()
     )
+
+
+def _live_activity_push_to_start_recipients(
+    db,
+    booking: Booking,
+    exclude_native_device_id: str | None = None,
+) -> list[LiveActivityPushToStartToken]:
+    """Push-to-start tokens that should get a remote-start for this booking."""
+    eligible_member_ids = {booking.member_id}
+    admins = (
+        db.query(FamilyMember)
+        .filter_by(is_admin=1, status="approved", live_activity_all_sessions=1)
+        .all()
+    )
+    eligible_member_ids.update(a.id for a in admins)
+
+    q = (
+        db.query(LiveActivityPushToStartToken)
+        .filter(LiveActivityPushToStartToken.member_id.in_(eligible_member_ids))
+    )
+    if exclude_native_device_id:
+        q = q.filter(LiveActivityPushToStartToken.native_device_id != exclude_native_device_id)
+    return q.all()
+
+
+def _push_live_activity_start_to_tokens(
+    db,
+    tokens: list[LiveActivityPushToStartToken],
+    content_state: dict,
+    alert_title: str,
+    alert_body: str,
+) -> tuple[int, int]:
+    """Remote-start Live Activities. Returns (sent, stale_deleted)."""
+    if not tokens or not _apns_is_configured():
+        return 0, 0
+
+    sent = 0
+    deleted = 0
+    for token_row in tokens:
+        payload = _live_activity_start_payload(
+            content_state,
+            native_device_id=token_row.native_device_id,
+            alert_title=alert_title,
+            alert_body=alert_body,
+        )
+        ok, status_code, body = _send_live_activity_apns(token_row.token, payload)
+        if ok:
+            sent += 1
+            continue
+        is_stale = status_code in (400, 410) and isinstance(body, str) and (
+            "BadDeviceToken" in body
+            or "Unregistered" in body
+            or "ExpiredToken" in body
+            or "DeviceTokenNotForTopic" in body
+        )
+        if is_stale:
+            db.delete(token_row)
+            deleted += 1
+            logger.info("Removed stale push-to-start token id=%s status=%s", token_row.id, status_code)
+        else:
+            logger.warning(
+                "Live Activity remote start failed token_id=%s status=%s body=%s",
+                token_row.id, status_code, body,
+            )
+    if deleted:
+        db.commit()
+    return sent, deleted
+
+
+def _fanout_live_activity_start(
+    booking_id: int,
+    exclude_native_device_id: str | None = None,
+    status: dict | None = None,
+) -> dict:
+    """Remote-start Live Activities for eligible native devices."""
+    result = {"sent": 0, "tokens": 0, "deleted": 0, "skipped": None}
+    if not _apns_is_configured():
+        result["skipped"] = "APNs is not configured"
+        return result
+    try:
+        with SessionLocal() as db:
+            booking = db.get(Booking, booking_id)
+            if not booking:
+                result["skipped"] = "booking not found"
+                return result
+            tokens = _live_activity_push_to_start_recipients(db, booking, exclude_native_device_id)
+            result["tokens"] = len(tokens)
+            if not tokens:
+                result["skipped"] = "no eligible push-to-start tokens"
+                return result
+            content_state = _live_activity_payload_for_booking(booking, status)
+            title = "Sauna is on"
+            body = f"{booking.member.name if booking.member else 'Someone'} started a session."
+            sent, deleted = _push_live_activity_start_to_tokens(db, tokens, content_state, title, body)
+            result.update({"sent": sent, "deleted": deleted, "skipped": None})
+            return result
+    except Exception as exc:
+        logger.error("_fanout_live_activity_start(booking_id=%s) failed: %s", booking_id, exc)
+        result["skipped"] = str(exc)
+        return result
 
 
 def _push_live_activity_to_tokens(
@@ -1588,7 +1718,7 @@ def _complete_running_bookings() -> None:
         logger.warning("Completing running bookings failed (non-fatal): %s", exc)
 
 
-def _auto_create_booking(member_id: int, member_name: str, target_c: int, on_time_mins: int) -> None:
+def _auto_create_booking(member_id: int, member_name: str, target_c: int, on_time_mins: int) -> int | None:
     """Create a tracking booking when the sauna is turned on.
 
     Best-effort — never raises.  Turning the sauna on starts a new physical
@@ -1632,14 +1762,17 @@ def _auto_create_booking(member_id: int, member_name: str, target_c: int, on_tim
             )
             db.add(booking)
             db.commit()
+            booking_id = booking.id
             logger.info(
                 "Auto-booking created for %s: %s–%s %d°C %d min",
                 member_name, start.strftime("%H:%M"), end.strftime("%H:%M"), target_c, on_time_mins,
             )
+            return booking_id
         finally:
             db.close()
     except Exception as exc:
         logger.warning("Auto-booking creation failed (non-fatal): %s", exc)
+        return None
 
 
 @app.route("/api/sauna/on", methods=["POST"])
@@ -1668,14 +1801,17 @@ def sauna_on():
             logger.warning("sauna/on missing onTime — defaulting to 60 min (body: %s)", body)
             on_time = 60
         mid, mname = member.id, member.name
+        native_device_id = (body.get("nativeDeviceId") or body.get("native_device_id") or "").strip() or None
     finally:
         db.close()
     try:
         logger.info("sauna/on → turn_on(target_c=%d °C / %d °F, on_time=%d min)", target_c, c_to_f(target_c), on_time)
         get_harvia().turn_on(target_c, on_time)
-        _auto_create_booking(mid, mname, target_c, on_time)
+        booking_id = _auto_create_booking(mid, mname, target_c, on_time)
         _log_sauna_action(mid, mname, "on", target_temp=target_c, on_time=on_time,
                           notes=json.dumps({"target_f": c_to_f(target_c)}))
+        if booking_id is not None:
+            _fanout_live_activity_start(booking_id, exclude_native_device_id=native_device_id)
         _notify_admins_push({
             "title": "🔥 Sauna is on",
             "body": f"{mname} started a session — {c_to_f(target_c)}°F ({target_c}°C) for {on_time} min.",
@@ -2009,6 +2145,8 @@ def apply_preset(name: str):
         p_temp, p_time, p_steam, p_rh, p_name = (
             preset.target_temp, preset.on_time, preset.steam_en, preset.target_rh, preset.name
         )
+        native_device_id = (request.get_json(silent=True) or {}).get("nativeDeviceId")
+        native_device_id = (native_device_id or "").strip() or None
     finally:
         db.close()
     # maxOnTime must match onTime — device firmware clamps actual timer to maxOnTime.
@@ -2019,7 +2157,10 @@ def apply_preset(name: str):
             payload["targetRh"] = p_rh
     try:
         get_harvia().set_state(payload)
+        booking_id = _auto_create_booking(mid, mname, p_temp, p_time)
         _log_sauna_action(mid, mname, "preset", target_temp=p_temp, on_time=p_time, preset_name=p_name)
+        if booking_id is not None:
+            _fanout_live_activity_start(booking_id, exclude_native_device_id=native_device_id)
         _notify_admins_push({
             "title": "🔥 Sauna is on",
             "body": f"{mname} started '{p_name}' — {c_to_f(p_temp)}°F ({p_temp}°C) for {p_time} min.",
@@ -2105,12 +2246,20 @@ def update_notification_prefs(member_id: int):
             return err("Member not found", 404)
         # Merge new prefs over existing ones
         prefs = target.get_notification_prefs()
-        for key in ("preheat", "signup", "booking", "approval"):
+        for key in ("preheat", "session_ending", "sauna_control", "signup", "booking", "approval"):
             if key in body:
                 prefs[key] = bool(body[key])
+        if "live_activity_all_sessions" in body:
+            if not target.is_admin:
+                return err("Live Activities for all sessions are admin-only", 403)
+            target.live_activity_all_sessions = 1 if body["live_activity_all_sessions"] else 0
         target.notification_prefs = json.dumps(prefs)
         db.commit()
-        return jsonify({"ok": True, "notification_prefs": prefs})
+        return jsonify({
+            "ok": True,
+            "notification_prefs": prefs,
+            "live_activity_all_sessions": bool(target.live_activity_all_sessions),
+        })
     finally:
         db.close()
 
@@ -2448,6 +2597,40 @@ def admin_test_live_activity_push():
         db.close()
 
 
+@app.route("/api/admin/native/live-activity/start-current", methods=["POST"])
+def admin_start_current_live_activity():
+    db, member, error = require_admin()
+    if error:
+        return error
+    try:
+        body = request.get_json(silent=True) or {}
+        exclude_native_device_id = (
+            body.get("nativeDeviceId") or body.get("native_device_id") or ""
+        ).strip() or None
+        booking = _current_live_booking(db, member) or _current_live_booking(db)
+        if not booking:
+            return err("No active or preheating booking found", 404)
+        booking_id = booking.id
+    finally:
+        db.close()
+
+    status = None
+    if harvia:
+        try:
+            status = status_with_f(harvia.get_full_status())
+        except Exception as exc:
+            logger.warning("Manual Live Activity start: Harvia status fetch failed: %s", exc)
+
+    result = _fanout_live_activity_start(
+        booking_id,
+        exclude_native_device_id=exclude_native_device_id,
+        status=status,
+    )
+    if result.get("sent", 0) <= 0:
+        return err(result.get("skipped") or "No Live Activity start pushes sent", 502)
+    return jsonify({"ok": True, "bookingId": booking_id, **result})
+
+
 # ---------------------------------------------------------------------------
 # Booking routes (require auth)
 # ---------------------------------------------------------------------------
@@ -2721,6 +2904,9 @@ def preheat_booking(booking_id: int):
         return error
     db_auth.close()
 
+    body = request.get_json(silent=True) or {}
+    native_device_id = (body.get("nativeDeviceId") or body.get("native_device_id") or "").strip() or None
+
     db = SessionLocal()
     try:
         booking = db.query(Booking).filter_by(id=booking_id).first()
@@ -2753,12 +2939,14 @@ def preheat_booking(booking_id: int):
 
         booking.status = "preheating"
         db.commit()
+        booking_id = booking.id
         _notify_admins_push({
             "title": "🔥 Sauna is preheating",
             "body": f"{member.name} started preheat — {c_to_f(b_temp)}°F ({b_temp}°C) for {b_time} min.",
             "tag": "sauna-on",
             "url": "/",
         }, pref_key="sauna_control")
+        _fanout_live_activity_start(booking_id, exclude_native_device_id=native_device_id)
         return jsonify({"ok": True, "status": "preheating"})
     finally:
         db.close()

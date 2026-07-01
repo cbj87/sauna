@@ -722,7 +722,7 @@ function HomePanel({
           }});
           if (onBook) onBook();
         }
-        await api('/api/sauna/on', { method: 'POST', body: { targetTempF: cToF(tempToUse), onTime: durationToUse } });
+        await api('/api/sauna/on', { method: 'POST', body: { targetTempF: cToF(tempToUse), onTime: durationToUse, nativeDeviceId: NativeBridge.deviceId } });
         NativeBridge.startSaunaSession({
           ...nativePayload(),
           targetTempF: cToF(tempToUse),
@@ -1709,7 +1709,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
         });
         toast('Sauna turned off', 'info');
       } else {
-        await api('/api/sauna/on', {method:'POST', body:{targetTempF: Math.min(tempF, myMaxTempF), onTime: duration}});
+        await api('/api/sauna/on', {method:'POST', body:{targetTempF: Math.min(tempF, myMaxTempF), onTime: duration, nativeDeviceId: NativeBridge.deviceId}});
         NativeBridge.startSaunaSession({
           ...nativeSessionPayload(),
           targetTempF: Math.min(tempF, myMaxTempF),
@@ -1742,7 +1742,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
         on_time:     seedDur,
       }});
       toast('Session booked!', 'success');
-      await api('/api/sauna/on', {method:'POST', body:{targetTempF: cToF(cappedTempC), onTime: seedDur}});
+      await api('/api/sauna/on', {method:'POST', body:{targetTempF: cToF(cappedTempC), onTime: seedDur, nativeDeviceId: NativeBridge.deviceId}});
       NativeBridge.startSaunaSession({
         bookingId: null,
         memberId: currentMember?.id ?? null,
@@ -1765,7 +1765,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
   async function handlePreset(name) {
     setLoading(true);
     try {
-      await api(`/api/sauna/preset/${name}`, {method:'POST'});
+      await api(`/api/sauna/preset/${name}`, {method:'POST', body:{nativeDeviceId: NativeBridge.deviceId}});
       const p = presets.find(x => x.name === name);
       NativeBridge.startSaunaSession({
         ...nativeSessionPayload(),
@@ -2800,6 +2800,18 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
     finally { setBusy(false); }
   }
 
+  async function startCurrentLiveActivities() {
+    setBusy(true);
+    try {
+      const res = await api('/api/admin/native/live-activity/start-current', {
+        method: 'POST',
+      });
+      alert(`Live Activity start sent to ${res.sent} device${res.sent === 1 ? '' : 's'}.`);
+    }
+    catch(e) { alert(e.message); }
+    finally { setBusy(false); }
+  }
+
   if (!data) return <div className="text-center text-gray-500 py-8 pulse">Loading…</div>;
 
   const pending = data.members.filter(m => m.status === 'pending');
@@ -2807,6 +2819,14 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
 
   return (
     <div className="space-y-5">
+      <div className="bg-gray-800 rounded-2xl p-5">
+        <h2 className="font-bold text-base mb-4">Live Activities</h2>
+        <button onClick={startCurrentLiveActivities} disabled={busy}
+          className="w-full py-3 rounded-xl font-bold text-white bg-orange-500 hover:bg-orange-400 disabled:opacity-50">
+          Start current session Live Activity
+        </button>
+      </div>
+
       {pending.length > 0 && (
         <div className="bg-gray-800 rounded-2xl p-5">
           <h2 className="font-bold text-base mb-4 text-orange-400">Pending Approval ({pending.length})</h2>
@@ -3098,6 +3118,14 @@ function NotificationsPanel({ onClose, notifState, notifLoading, vapidKey, onSub
                       </div>
                       <Toggle checked={notifPrefs.booking !== false} onChange={v => onPrefChange('booking', v)} />
                     </div>
+
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-medium">Live Activities for all sessions</p>
+                        <p className="text-xs text-gray-400 mt-0.5">Show active sessions started by any member</p>
+                      </div>
+                      <Toggle checked={notifPrefs.live_activity_all_sessions === true} onChange={v => onPrefChange('live_activity_all_sessions', v)} />
+                    </div>
                   </>
                 )}
               </div>
@@ -3143,7 +3171,10 @@ function MainApp({ currentMember, onLogout }) {
   const [notifState, setNotifState] = useState('loading'); // loading | unsupported | default | granted | denied | subscribed
   const [notifLoading, setNotifLoading] = useState(false);
   const [showNotifPanel, setShowNotifPanel] = useState(false);
-  const [notifPrefs, setNotifPrefs] = useState(currentMember?.notification_prefs || {});
+  const [notifPrefs, setNotifPrefs] = useState({
+    ...(currentMember?.notification_prefs || {}),
+    live_activity_all_sessions: !!currentMember?.live_activity_all_sessions,
+  });
 
   const today = localDate(new Date());
   const [bookingsLoading, setBookingsLoading] = useState(true);
@@ -3420,7 +3451,7 @@ function MainApp({ currentMember, onLogout }) {
 
   async function handlePreheat(id) {
     try {
-      await api(`/api/bookings/${id}/preheat`, {method:'POST'});
+      await api(`/api/bookings/${id}/preheat`, {method:'POST', body:{nativeDeviceId: NativeBridge.deviceId}});
       const booking = bookings.find(b => b.id === id);
       if (booking) {
         NativeBridge.startSaunaSession({
