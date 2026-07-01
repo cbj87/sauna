@@ -1014,7 +1014,12 @@ function SettingsPanel({
   currentMember, notifState, notifLoading, vapidKey, onOpenNotifications,
   notifPrefs, onPrefChange, onLogout, onShowHelp, onEditProfile,
 }) {
+  const isNative = NativeBridge.isNative;
   const isSubscribed = notifState === 'subscribed';
+  const isDenied = notifState === 'denied';
+  // On native, "Enable" isn't something the web layer can do — the OS prompt
+  // fired on app launch; if the user said no, they toggle it in iOS Settings.
+  const canOpenPanel = isNative ? isSubscribed : (vapidKey && !notifLoading);
   const { unit, setUnit, fmtC } = useTempUnit();
   const ToggleRow = ({ title, subtitle, checked, onChange, disabled }) => (
     <div className="grid grid-cols-[1fr_5rem] items-center gap-4 border-t border-gray-700/70 px-4 py-4 first:border-t-0">
@@ -1043,11 +1048,15 @@ function SettingsPanel({
           <div>
             <div className="text-sm font-semibold text-white">Notifications</div>
             <div className="mt-0.5 text-xs text-gray-500">
-              {notifState === 'unsupported' ? 'Not supported on this device' : isSubscribed ? 'Enabled on this device' : 'Session and safety alerts'}
+              {notifState === 'unsupported' ? 'Not supported on this device'
+                : isSubscribed ? 'Enabled on this device'
+                : isNative && isDenied ? 'Blocked — enable in iOS Settings › Sweat Box'
+                : isNative ? 'Enable in iOS Settings › Sweat Box'
+                : 'Session and safety alerts'}
             </div>
           </div>
           <div className="flex justify-end">
-            <button onClick={onOpenNotifications} disabled={!vapidKey || notifLoading}
+            <button onClick={onOpenNotifications} disabled={!canOpenPanel}
               className="w-20 rounded-xl bg-orange-500/15 px-3 py-2 text-center text-xs font-bold text-orange-300 disabled:opacity-40">
               {isSubscribed ? 'Manage' : 'Enable'}
             </button>
@@ -3123,6 +3132,7 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
 
 // ─── notifications panel ──────────────────────────────────────────────────────
 function NotificationsPanel({ onClose, notifState, notifLoading, vapidKey, onSubscribeToggle, notifPrefs, onPrefChange, currentMember }) {
+  const isNative = NativeBridge.isNative;
   const isSubscribed = notifState === 'subscribed';
   const isDenied = notifState === 'denied';
 
@@ -3158,12 +3168,21 @@ function NotificationsPanel({ onClose, notifState, notifLoading, vapidKey, onSub
             <div>
               <p className="font-semibold text-sm">Push notifications</p>
               <p className="text-xs text-gray-400 mt-0.5">
-                {isDenied ? 'Blocked in browser settings — enable in Settings > Safari/Chrome'
+                {isNative && isSubscribed ? 'Enabled — managed by iOS'
+                  : isNative && isDenied ? 'Blocked — enable in iOS Settings › Sweat Box'
+                  : isNative ? 'Enable in iOS Settings › Sweat Box › Notifications'
+                  : isDenied ? 'Blocked in browser settings — enable in Settings > Safari/Chrome'
                   : isSubscribed ? 'Notifications are enabled on this device'
                   : 'Enable to receive alerts on this device'}
               </p>
             </div>
-            <Toggle checked={isSubscribed} onChange={onSubscribeToggle} disabled={isDenied} loading={notifLoading} />
+            {isNative ? (
+              <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${isSubscribed ? 'bg-orange-500/15 text-orange-300' : 'bg-gray-700 text-gray-400'}`}>
+                {isSubscribed ? 'ON' : 'OFF'}
+              </span>
+            ) : (
+              <Toggle checked={isSubscribed} onChange={onSubscribeToggle} disabled={isDenied} loading={notifLoading} />
+            )}
           </div>
 
           {/* Per-notification toggles — only shown when subscribed */}
@@ -3338,6 +3357,19 @@ function MainApp({ currentMember, onLogout }) {
 
   // Push notification setup
   useEffect(() => {
+    // Native app path: Web Push isn't used — we register for APNs alerts via
+    // the native side. The server tells us whether an APNs token is on file
+    // (via /api/auth/me → has_apns_token); we also flip subscribed
+    // optimistically the moment the native bridge posts a device-token event.
+    if (NativeBridge.isNative) {
+      const onDeviceToken = () => setNotifState('subscribed');
+      window.addEventListener('device-token', onDeviceToken);
+      api('/api/auth/me').then(res => {
+        setNotifState(res?.has_apns_token ? 'subscribed' : 'default');
+      }).catch(() => setNotifState('default'));
+      return () => window.removeEventListener('device-token', onDeviceToken);
+    }
+
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
       setNotifState('unsupported');
       return;
@@ -3566,7 +3598,7 @@ function MainApp({ currentMember, onLogout }) {
               className="text-xs text-gray-500 hover:text-gray-300 font-semibold px-2 py-1 rounded-lg hover:bg-gray-800 transition-colors">
               FAQ
             </button>
-            {vapidKey && notifState !== 'unsupported' && notifState !== 'loading' && (
+            {(vapidKey || NativeBridge.isNative) && notifState !== 'unsupported' && notifState !== 'loading' && (
               <button
                 onClick={() => setShowNotifPanel(true)}
                 title="Notification settings"

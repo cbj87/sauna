@@ -1395,7 +1395,19 @@ def me():
         if not member or member.status == "rejected":
             session.clear()
             return jsonify({"member": None})
-        return jsonify({"member": member.to_dict(), "csrf_token": _generate_csrf_token()})
+        # Client uses this to gate the Settings notification UI: on the native
+        # app there's no Web Push subscription, so `has_apns_token` is what
+        # tells the frontend "notifications are wired up for this account".
+        has_apns_token = (
+            db.query(NativeDevice)
+            .filter(NativeDevice.member_id == member.id, NativeDevice.apns_token.isnot(None))
+            .first() is not None
+        )
+        return jsonify({
+            "member": member.to_dict(),
+            "has_apns_token": has_apns_token,
+            "csrf_token": _generate_csrf_token(),
+        })
     finally:
         db.close()
 
