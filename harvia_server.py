@@ -1184,6 +1184,32 @@ _device_state_lock = threading.Lock()
 _last_device_active: int | None = None  # last polled `active` value
 _last_app_off_ts: float = 0.0           # monotonic ts of last app-initiated turn_off
 
+# Shared cache of the most recent full Harvia status, populated by the 60s
+# device-state job (which polls Harvia unconditionally).  Lets read-only clients
+# poll `/api/sauna/status?cached=1` during a session without adding Harvia hits.
+_status_cache_lock = threading.Lock()
+_status_cache: dict = {"status": None, "ts": 0.0}
+
+
+def _store_status_cache(status: dict | None) -> None:
+    """Record the latest full status dict (raw, pre-status_with_f) with a timestamp."""
+    if not status:
+        return
+    with _status_cache_lock:
+        _status_cache["status"] = status
+        _status_cache["ts"] = _time.time()
+
+
+def _get_cached_status(max_age: float = 90.0) -> tuple[dict | None, float]:
+    """Return (status, age_seconds) when the cached status is fresher than max_age, else (None, age)."""
+    with _status_cache_lock:
+        status = _status_cache["status"]
+        ts = _status_cache["ts"]
+    age = _time.time() - ts
+    if status is not None and age <= max_age:
+        return status, age
+    return None, age
+
 
 def log_device_state():
     if not harvia:
@@ -1194,6 +1220,8 @@ def log_device_state():
     except Exception as exc:
         logger.warning("device tick: status fetch failed: %s", exc)
         return
+
+    _store_status_cache(s)
 
     active = s.get("active") or 0
     prev = _last_device_active
@@ -1825,8 +1853,18 @@ def change_password(member_id: int):
 @app.route("/api/sauna/status")
 def sauna_status():
     # Status is readable without auth (shown on login screen too)
+    #
+    # ?cached=1 serves the last status polled by the 60s device-state job
+    # (≤~60s old) without hitting Harvia — used by clients that auto-refresh
+    # every minute during an active session.  Falls back to a live fetch if the
+    # cache is stale or empty.
+    if request.args.get("cached") == "1":
+        cached, _age = _get_cached_status()
+        if cached is not None:
+            return jsonify(status_with_f(cached))
     try:
         status = get_harvia().get_full_status()
+        _store_status_cache(status)
         return jsonify(status_with_f(status))
     except Exception as exc:
         logger.error("Status fetch failed: %s", exc)

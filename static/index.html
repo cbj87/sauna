@@ -3296,9 +3296,11 @@ function MainApp({ currentMember, onLogout }) {
 
   const [statusUpdatedAt, setStatusUpdatedAt] = useState(null);
 
-  async function loadStatus() {
+  async function loadStatus(cached = false) {
     try {
-      const s = await api('/api/sauna/status');
+      // cached=true reads the server-side status cache (populated every 60s by
+      // the device-state job) — no Harvia hit. Used by the active-session poll.
+      const s = await api(cached === true ? '/api/sauna/status?cached=1' : '/api/sauna/status');
       setStatus(s);
       setStatusUpdatedAt(new Date());
     } catch(e) {
@@ -3361,6 +3363,15 @@ function MainApp({ currentMember, onLogout }) {
     return () => clearInterval(interval);
   }, []);
 
+  // While the sauna is on, auto-refresh the home values every 60s from the
+  // server-side status cache — the same data the Live Activity pushes, with no
+  // extra Harvia API hit. Stops as soon as the sauna turns off.
+  useEffect(() => {
+    if (status?.active !== 1) return;
+    const interval = setInterval(() => loadStatus(true), 60000);
+    return () => clearInterval(interval);
+  }, [status?.active === 1]);
+
   // Push notification setup
   useEffect(() => {
     // Native app path: Web Push isn't used — we register for APNs alerts via
@@ -3405,13 +3416,18 @@ function MainApp({ currentMember, onLogout }) {
   }, []);
 
   // Refresh bookings (DB only) when app is foregrounded — no Harvia API call.
+  // Also pull cached status so an on-going session shows fresh values right away
+  // (cached read — no Harvia hit).
   useEffect(() => {
     function onVisible() {
-      if (!document.hidden) loadBookings();
+      if (!document.hidden) {
+        loadBookings();
+        if (status?.active === 1) loadStatus(true);
+      }
     }
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, []);
+  }, [status?.active === 1]);
 
   async function handlePrefChange(key, value) {
     const updated = { ...notifPrefs, [key]: value };
