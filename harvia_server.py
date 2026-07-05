@@ -27,6 +27,7 @@ from harvia_client import HarviaClient
 from models import (
     DB_PATH,
     Booking,
+    BookingParticipant,
     ControlLog,
     FamilyMember,
     LiveActivityPushToStartToken,
@@ -618,6 +619,41 @@ def status_with_f(status: dict) -> dict:
     return out
 
 
+def _booking_to_dict_for(booking: Booking, viewer: FamilyMember | None = None) -> dict:
+    data = booking.to_dict()
+    participants = sorted(
+        (p for p in (booking.participants or []) if p.member is not None),
+        key=lambda p: p.joined_at or datetime.min,
+    )
+    data["participants"] = [p.to_dict() for p in participants]
+    participant_ids = {p.member_id for p in participants}
+    if viewer is not None:
+        data["joined"] = viewer.id == booking.member_id or viewer.id in participant_ids
+        data["can_control"] = bool(viewer.is_admin) or data["joined"]
+    else:
+        data["joined"] = False
+        data["can_control"] = False
+    data["participant_count"] = len(participant_ids) + (0 if booking.member_id in participant_ids else 1)
+    return data
+
+
+def _is_booking_participant(db, booking_id: int, member_id: int) -> bool:
+    return (
+        db.query(BookingParticipant)
+        .filter_by(booking_id=booking_id, member_id=member_id)
+        .first()
+        is not None
+    )
+
+
+def _can_control_booking(db, booking: Booking, member: FamilyMember) -> bool:
+    return bool(
+        member.is_admin
+        or booking.member_id == member.id
+        or _is_booking_participant(db, booking.id, member.id)
+    )
+
+
 def _booking_remaining_minutes(booking: Booking, now: datetime | None = None) -> int:
     now = now or app_now()
     end_dt = datetime.combine(now.date(), booking.end_time)
@@ -654,13 +690,14 @@ def _current_live_booking(db, member: FamilyMember | None = None) -> Booking | N
     yesterday = today - timedelta(days=1)
     current_time = now.time()
 
+    q = db.query(Booking)
     filters = [Booking.status.in_(["active", "preheating"])]
     if member is not None:
-        filters.append(Booking.member_id == member.id)
+        q = q.outerjoin(BookingParticipant, BookingParticipant.booking_id == Booking.id)
+        filters.append((Booking.member_id == member.id) | (BookingParticipant.member_id == member.id))
 
     return (
-        db.query(Booking)
-        .filter(
+        q.filter(
             *filters,
             (
                 (Booking.date == today)
@@ -684,6 +721,7 @@ def _live_activity_recipient_tokens(db, booking: Booking) -> list[LiveActivityTo
     started activities locally without a server-supplied booking_id.
     """
     eligible_member_ids = {booking.member_id}
+    eligible_member_ids.update(p.member_id for p in (booking.participants or []))
     admins = (
         db.query(FamilyMember)
         .filter_by(is_admin=1, status="approved", live_activity_all_sessions=1)
@@ -704,6 +742,7 @@ def _live_activity_push_to_start_recipients(
 ) -> list[LiveActivityPushToStartToken]:
     """Push-to-start tokens that should get a remote-start for this booking."""
     eligible_member_ids = {booking.member_id}
+    eligible_member_ids.update(p.member_id for p in (booking.participants or []))
     admins = (
         db.query(FamilyMember)
         .filter_by(is_admin=1, status="approved", live_activity_all_sessions=1)
@@ -1349,7 +1388,7 @@ def signup():
 
         _notify_admins({
             "title": "👤 New signup",
-            "body": f"{name} wants to join — approve them in the Admin tab.",
+            "body": f"{name} wants to join — approve them in Settings.",
             "tag": f"signup-{member.id}",
             "url": "/",
         }, pref_key="signup")
@@ -2084,8 +2123,8 @@ def sauna_extend():
         )
         if not active_booking:
             return err("No active session to extend")
-        if active_booking.member_id != member.id and not member.is_admin:
-            return err("Cannot extend someone else's session", 403)
+        if not _can_control_booking(db, active_booking, member):
+            return err("Join this session before extending it", 403)
         mid, mname = member.id, member.name
     finally:
         db.close()
@@ -2146,8 +2185,8 @@ def extend_booking_time(booking_id: int):
         booking = db.query(Booking).filter_by(id=booking_id).first()
         if not booking:
             return err("Booking not found", 404)
-        if booking.member_id != member.id and not member.is_admin:
-            return err("Cannot extend someone else's session", 403)
+        if not _can_control_booking(db, booking, member):
+            return err("Join this session before extending it", 403)
         if booking.status not in ("scheduled", "preheating", "active"):
             return err(f"Cannot extend a booking with status '{booking.status}'")
 
@@ -2194,7 +2233,7 @@ def extend_booking_time(booking_id: int):
             on_time=booking.on_time,
             notes=json.dumps({"added_mins": add_minutes, "booking_only": True}),
         )
-        return jsonify({"ok": True, "addedMinutes": add_minutes, "booking": booking.to_dict()})
+        return jsonify({"ok": True, "addedMinutes": add_minutes, "booking": _booking_to_dict_for(booking, member)})
     finally:
         db.close()
 
@@ -2852,6 +2891,11 @@ def admin_start_current_live_activity():
 
 @app.route("/api/bookings")
 def list_bookings():
+    db_auth, member, error = require_auth()
+    if error:
+        return error
+    db_auth.close()
+
     date_str      = request.args.get("date")
     date_from_str = request.args.get("date_from")
     date_to_str   = request.args.get("date_to")
@@ -2876,7 +2920,7 @@ def list_bookings():
                 except ValueError:
                     return err("Invalid date_to format, use YYYY-MM-DD")
         bookings = q.order_by(Booking.date, Booking.start_time).all()
-        return jsonify([b.to_dict() for b in bookings])
+        return jsonify([_booking_to_dict_for(b, member) for b in bookings])
     finally:
         db.close()
 
@@ -2973,7 +3017,7 @@ def create_booking():
                 "tag": f"booking-new-{booking.id}",
                 "url": "/",
             }, pref_key="booking")
-        return jsonify(booking.to_dict()), 201
+        return jsonify(_booking_to_dict_for(booking, member)), 201
     except IntegrityError:
         db.rollback()
         return err("Database error creating booking", 500)
@@ -3102,7 +3146,7 @@ def edit_booking(booking_id: int):
                 "tag": f"booking-edit-{booking.id}",
                 "url": "/",
             }, pref_key="booking")
-        return jsonify(booking.to_dict())
+        return jsonify(_booking_to_dict_for(booking, member))
     except IntegrityError:
         db.rollback()
         return err("Database error updating booking", 500)
@@ -3125,8 +3169,8 @@ def preheat_booking(booking_id: int):
         booking = db.query(Booking).filter_by(id=booking_id).first()
         if not booking:
             return err("Booking not found", 404)
-        if booking.member_id != member.id and not member.is_admin:
-            return err("Cannot preheat someone else's booking", 403)
+        if not _can_control_booking(db, booking, member):
+            return err("Join this session before preheating it", 403)
         if booking.status != "scheduled":
             return err(f"Cannot preheat a booking with status '{booking.status}'")
 
@@ -3165,6 +3209,31 @@ def preheat_booking(booking_id: int):
         db.close()
 
 
+@app.route("/api/bookings/<int:booking_id>/join", methods=["POST"])
+def join_booking(booking_id: int):
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        booking = db.query(Booking).filter_by(id=booking_id).first()
+        if not booking:
+            return err("Booking not found", 404)
+        if booking.status == "cancelled":
+            return err("Cannot join a cancelled session")
+
+        if booking.member_id != member.id and not _is_booking_participant(db, booking.id, member.id):
+            db.add(BookingParticipant(booking_id=booking.id, member_id=member.id))
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+            db.refresh(booking)
+
+        return jsonify({"ok": True, "booking": _booking_to_dict_for(booking, member)})
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Booking history & member stats
 # ---------------------------------------------------------------------------
@@ -3175,17 +3244,26 @@ def booking_history():
     if error:
         return error
     member_id_param = request.args.get("member_id")
+    include_joinable = request.args.get("include_joinable") == "1"
     try:
-        q = db.query(Booking).filter(Booking.status.in_(["completed", "cancelled"]))
+        q = db.query(Booking).filter(Booking.status != "cancelled")
         if member_id_param:
             req_id = int(member_id_param)
             if req_id != member.id and not member.is_admin:
                 return err("Cannot view another member's history", 403)
-            q = q.filter(Booking.member_id == req_id)
-        elif not member.is_admin:
-            q = q.filter(Booking.member_id == member.id)
+        else:
+            req_id = member.id
+        q = q.outerjoin(
+            BookingParticipant,
+            BookingParticipant.booking_id == Booking.id,
+        )
+        if not include_joinable or req_id != member.id:
+            q = q.filter(
+                (Booking.member_id == req_id) | (BookingParticipant.member_id == req_id)
+            )
+        q = q.distinct()
         bookings = q.order_by(Booking.date.desc(), Booking.start_time.desc()).limit(50).all()
-        return jsonify([b.to_dict() for b in bookings])
+        return jsonify([_booking_to_dict_for(b, member) for b in bookings])
     finally:
         db.close()
 

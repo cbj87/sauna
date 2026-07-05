@@ -442,7 +442,7 @@ function todayBookingsFor(bookings) {
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
 }
 
-function TodaySessionList({ bookings, onOpenSchedule, onEmptyAction, emptyActionLabel = 'Book a session', onPress, onPreheat, loading }) {
+function TodaySessionList({ bookings, onOpenSchedule, onEmptyAction, emptyActionLabel = 'Book a session', onPress, onPreheat, onJoin, loading }) {
   const handleEmptyAction = onEmptyAction || onOpenSchedule;
 
   if (loading) {
@@ -469,7 +469,8 @@ function TodaySessionList({ bookings, onOpenSchedule, onEmptyAction, emptyAction
     <div className="space-y-3">
       {bookings.map(b => {
         const minsUntil = (new Date(`${b.date}T${b.start_time}`) - new Date()) / 60000;
-        const canPreheat = b.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0;
+        const canPreheat = b.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0 && b.can_control !== false;
+        const canJoin = !!onJoin && !b.joined && b.status !== 'cancelled';
         const timeLabel = b.status === 'active' ? 'Now' : fmtTime(b.start_time).replace(' PM', '').replace(' AM', '');
         const statusLabel = b.status === 'active' ? 'Active' : b.status === 'preheating' ? 'Heating' : b.status === 'completed' ? 'Done' : 'Later';
         const statusCls = b.status === 'active' || b.status === 'preheating'
@@ -490,6 +491,11 @@ function TodaySessionList({ bookings, onOpenSchedule, onEmptyAction, emptyAction
                 className="rounded-full bg-orange-500 px-3 py-2 text-xs font-black text-white">
                 Preheat
               </span>
+            ) : canJoin ? (
+              <span onClick={e => { e.stopPropagation(); onJoin?.(b.id); }}
+                className="rounded-full bg-white/10 px-3 py-2 text-xs font-black text-orange-300">
+                Join
+              </span>
             ) : (
               <span className={`rounded-full px-3 py-2 text-xs font-black ${statusCls}`}>{statusLabel}</span>
             )}
@@ -503,7 +509,7 @@ function TodaySessionList({ bookings, onOpenSchedule, onEmptyAction, emptyAction
 function HomePanel({
   status, statusUpdatedAt, bookings, members, presets, currentMember, onRefresh, onBook,
   toast, tempF, setTempF, duration, setDuration, manuallySet, setManuallySet,
-  onOpenSchedule, onOpenMore, onSlotClick, onEmptyClick, onPreheat, loadingBookings,
+  onOpenSchedule, onOpenMore, onSlotClick, onEmptyClick, onPreheat, onJoin, loadingBookings,
 }) {
   const { fmtF } = useTempUnit();
   const [busy, setBusy] = useState(false);
@@ -681,7 +687,7 @@ function HomePanel({
           ) : (
             <button onClick={() => onOpenSchedule?.()} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-gray-200 hover:bg-white/15">Book</button>
           )}
-          <button onClick={() => onOpenMore?.()} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-gray-200 hover:bg-white/15">More</button>
+          <button onClick={() => onOpenMore?.()} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-gray-200 hover:bg-white/15">Settings</button>
         </div>
       </section>
 
@@ -698,6 +704,7 @@ function HomePanel({
           onOpenSchedule={onOpenSchedule}
           onPress={onSlotClick}
           onPreheat={onPreheat}
+          onJoin={onJoin}
           loading={loadingBookings}
         />
       </section>
@@ -706,7 +713,7 @@ function HomePanel({
 }
 
 function SchedulePanel({
-  bookings, loading, onCardPress, onPreheat, onRefresh, onBookNew, bookingWindowDays,
+  bookings, loading, onCardPress, onPreheat, onJoin, onRefresh, onBookNew, bookingWindowDays,
 }) {
   const [selectedDate, setSelectedDate] = useState(localDate(new Date()));
   const daysToShow = Math.min(bookingWindowDays || 30, 14);
@@ -768,6 +775,7 @@ function SchedulePanel({
               bookings={day.bookings}
               onPress={onCardPress}
               onPreheat={onPreheat}
+              onJoin={onJoin}
               loading={loading}
             />
           </section>
@@ -778,6 +786,7 @@ function SchedulePanel({
             emptyActionLabel="Book a session"
             onPress={onCardPress}
             onPreheat={onPreheat}
+            onJoin={onJoin}
             loading={loading}
           />
         )}
@@ -786,7 +795,87 @@ function SchedulePanel({
   );
 }
 
-function MorePanel({ currentMember, members, presets, pendingCount, onReloadMembers, onReloadPresets, pendingEditMemberId, onConsumeEditMemberId }) {
+function HistoryPanel({ sessions, loading, onRefresh, onCardPress, onJoin }) {
+  const { fmtC } = useTempUnit();
+  const grouped = sessions.reduce((acc, b) => {
+    (acc[b.date] ||= []).push(b);
+    return acc;
+  }, {});
+  const dates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-black tracking-tight">History</h2>
+          <p className="text-sm text-gray-500">Your sessions, plus family sessions you can join</p>
+        </div>
+        <button onClick={onRefresh} className="rounded-xl bg-gray-800 px-3 py-2 text-xs font-bold text-gray-400 hover:text-gray-200">↻</button>
+      </div>
+
+      {loading ? (
+        <div className="space-y-3">
+          <Skeleton className="h-20 rounded-2xl" />
+          <Skeleton className="h-20 rounded-2xl" />
+          <Skeleton className="h-20 rounded-2xl" />
+        </div>
+      ) : dates.length === 0 ? (
+        <div className="rounded-2xl border border-white/10 bg-gray-800/80 px-4 py-5 text-center">
+          <div className="text-sm font-bold text-white">No sessions yet</div>
+          <div className="mt-1 text-xs text-gray-500">Book a session to start tracking it here.</div>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          {dates.map(iso => {
+            const d = new Date(`${iso}T12:00:00`);
+            const dayLabel = iso === localDate(new Date())
+              ? 'Today'
+              : d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+            return (
+              <section key={iso}>
+                <div className="mb-3">
+                  <h3 className={`text-lg font-black tracking-tight ${iso === localDate(new Date()) ? 'text-orange-400' : 'text-white'}`}>{dayLabel}</h3>
+                  <p className="text-xs text-gray-500">{grouped[iso].length} session{grouped[iso].length === 1 ? '' : 's'}</p>
+                </div>
+                <div className="space-y-3">
+                  {grouped[iso].map(b => {
+                    const statusLabel = b.status === 'active' ? 'Active' : b.status === 'preheating' ? 'Heating' : b.status === 'completed' ? 'Done' : 'Scheduled';
+                    const statusCls = b.status === 'active' || b.status === 'preheating'
+                      ? 'bg-orange-500/15 text-orange-200'
+                      : 'bg-white/10 text-gray-300';
+                    const canJoin = !!onJoin && !b.joined && b.status !== 'cancelled';
+                    return (
+                      <button key={b.id} onClick={() => onCardPress(b)}
+                        className={`grid w-full grid-cols-[4.5rem_1fr_auto] items-center gap-3 rounded-2xl border px-4 py-4 text-left transition-colors ${b.status === 'active' ? 'border-orange-500/60 bg-orange-500/10' : 'border-white/10 bg-gray-800/80 hover:bg-gray-700/60'}`}>
+                        <div className="text-base font-black text-gray-200">{fmtTime(b.start_time).replace(' PM', '').replace(' AM', '')}</div>
+                        <div className="min-w-0">
+                          <div className="truncate text-base font-black text-white">{b.member_name}'s session</div>
+                          <div className="mt-0.5 truncate text-sm font-semibold text-gray-400">
+                            {fmtTime(b.start_time)} - {fmtTime(b.end_time)} · {fmtC(b.target_temp)}
+                          </div>
+                        </div>
+                        {canJoin ? (
+                          <span onClick={e => { e.stopPropagation(); onJoin(b.id); }}
+                            className="rounded-full bg-white/10 px-3 py-2 text-xs font-black text-orange-300">
+                            Join
+                          </span>
+                        ) : (
+                          <span className={`rounded-full px-3 py-2 text-xs font-black ${statusCls}`}>{statusLabel}</span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SettingsSections({ currentMember, members, presets, pendingCount, onReloadMembers, onReloadPresets, pendingEditMemberId, onConsumeEditMemberId }) {
   const [section, setSection] = useState(currentMember?.is_admin && pendingCount > 0 ? 'admin' : 'family');
   // If we were routed here to edit a specific member, force the Family section.
   useEffect(() => { if (pendingEditMemberId) setSection('family'); }, [pendingEditMemberId]);
@@ -801,7 +890,7 @@ function MorePanel({ currentMember, members, presets, pendingCount, onReloadMemb
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-xl font-black tracking-tight">More</h2>
+        <h2 className="text-xl font-black tracking-tight">Management</h2>
         <p className="text-sm text-gray-500">Family, presets, and maintenance tools</p>
       </div>
       <div className="grid gap-2">
@@ -834,6 +923,8 @@ function MorePanel({ currentMember, members, presets, pendingCount, onReloadMemb
 function SettingsPanel({
   currentMember, notifState, notifLoading, vapidKey, onOpenNotifications,
   notifPrefs, onPrefChange, onLogout, onShowHelp, onEditProfile,
+  members, presets, pendingCount, onReloadMembers, onReloadPresets,
+  pendingEditMemberId, onConsumeEditMemberId,
 }) {
   const isNative = NativeBridge.isNative;
   const isSubscribed = notifState === 'subscribed';
@@ -926,6 +1017,17 @@ function SettingsPanel({
           <span className="text-gray-500">↩</span>
         </button>
       </div>
+
+      <SettingsSections
+        currentMember={currentMember}
+        members={members}
+        presets={presets}
+        pendingCount={pendingCount}
+        onReloadMembers={onReloadMembers}
+        onReloadPresets={onReloadPresets}
+        pendingEditMemberId={pendingEditMemberId}
+        onConsumeEditMemberId={onConsumeEditMemberId}
+      />
     </div>
   );
 }
@@ -943,19 +1045,19 @@ function HelpModal({ onClose }) {
     },
     {
       q: 'When do the controls unlock?',
-      a: 'The Controls tab unlocks when you have an active session or one starting within the next 90 minutes. Outside that window the controls are locked. You can also trigger preheat directly from a booking card once you\'re within the 90-minute window.',
+      a: 'Controls unlock when you own or join an active session, or one starting within the next 90 minutes. Outside that window the controls are locked. You can also trigger preheat from a booking card once you\'re within the 90-minute window.',
     },
     {
       q: 'What are presets?',
-      a: 'Presets are quick-start shortcuts on the Controls tab — each one has a name, a target temperature, and a duration. Tap one to instantly apply those settings without adjusting sliders manually.',
+      a: 'Presets are quick-start shortcuts — each one has a name, a target temperature, and a duration. Tap one to instantly apply those settings without adjusting sliders manually.',
     },
     {
       q: 'How do I add or edit presets?',
-      a: 'Presets can be added, edited, or deleted from the Admin tab. Only admins can manage presets.',
+      a: 'Presets can be added, edited, or deleted from Management in Settings. Only admins can manage presets.',
     },
     {
       q: 'How do I add a new member?',
-      a: 'New members sign up from the login screen. They\'ll show as pending until an admin approves them from the Admin tab. Each member gets their own colour, default temperature, and default session length.',
+      a: 'New members sign up from the login screen. They\'ll show as pending until an admin approves them from Management in Settings. Each member gets their own colour, default temperature, and default session length.',
     },
     {
       q: 'What can admins do?',
@@ -1158,12 +1260,14 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
 }
 
 // ─── slot detail modal ────────────────────────────────────────────────────────
-function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit, currentMember }) {
+function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit, onJoin, currentMember }) {
   const now = new Date();
   const bookingStart = new Date(`${booking.date}T${booking.start_time}`);
   const minsUntil = (bookingStart - now) / 60000;
   const isOwner = currentMember?.id === booking.member_id || currentMember?.is_admin;
-  const canPreheat = booking.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0 && isOwner;
+  const canControl = isOwner || booking.can_control;
+  const canPreheat = booking.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0 && canControl;
+  const canJoin = !!onJoin && booking.joined === false && booking.status !== 'cancelled';
   const [confirmCancel, setConfirmCancel] = useState(false);
   const canEdit = booking.status === 'scheduled' && isOwner;
   const color = booking.member_color || '#f97316';
@@ -1180,8 +1284,15 @@ function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit, currentMembe
           <div>Temp: {cToF(booking.target_temp)}°F ({booking.target_temp}°C)</div>
           <div>Duration: {booking.on_time} min</div>
           <div className="capitalize">Status: <span className="font-semibold text-white">{booking.status}</span></div>
+          {booking.participant_count > 1 && <div>{booking.participant_count} people joined</div>}
         </div>
         <div className="flex flex-col gap-3">
+          {canJoin && (
+            <button onClick={()=>onJoin(booking.id)}
+              className="w-full bg-orange-500 hover:bg-orange-400 text-white py-3 rounded-xl font-bold text-base">
+              Join Session
+            </button>
+          )}
           {canPreheat && (
             <button onClick={()=>onPreheat(booking.id)}
               className="w-full bg-orange-500 hover:bg-orange-400 text-white py-3 rounded-xl font-bold text-base">
@@ -1240,10 +1351,6 @@ function MembersPanel({ members, onReload, currentMember, pendingEditMemberId, o
   const [pwConfirm, setPwConfirm]           = useState('');
   const [pwError, setPwError]               = useState('');
   const [pwSuccess, setPwSuccess]           = useState(false);
-  // Booking history
-  const [history, setHistory] = useState(null);
-  const [stats, setStats] = useState(null);
-  const [historyLoading, setHistoryLoading] = useState(false);
 
   async function handleAdd() {
     if (!name.trim()) return;
@@ -1299,20 +1406,6 @@ function MembersPanel({ members, onReload, currentMember, pendingEditMemberId, o
     } catch(e) {
       setPwError(e.message);
     }
-  }
-
-  async function loadHistory() {
-    if (!currentMember) return;
-    setHistoryLoading(true);
-    try {
-      const [h, s] = await Promise.all([
-        api(`/api/bookings/history?member_id=${currentMember.id}`),
-        api(`/api/members/${currentMember.id}/stats`),
-      ]);
-      setHistory(h);
-      setStats(s);
-    } catch(e) { alert(e.message); }
-    finally { setHistoryLoading(false); }
   }
 
   return (
@@ -1442,59 +1535,6 @@ function MembersPanel({ members, onReload, currentMember, pendingEditMemberId, o
           {members.length === 0 && <p className="text-gray-500 text-sm">No members yet.</p>}
         </div>
       </div>
-
-      {currentMember && (
-        <div className="bg-gray-800 rounded-2xl p-5">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="font-bold text-base">My History</h2>
-            <button onClick={loadHistory} disabled={historyLoading}
-              className="text-xs text-gray-500 hover:text-gray-300 disabled:opacity-50">
-              {historyLoading ? '…' : history ? '↻ Refresh' : 'Load'}
-            </button>
-          </div>
-          {!history && !historyLoading && (
-            <p className="text-gray-500 text-sm text-center py-4">Tap Load to view your session history</p>
-          )}
-          {historyLoading && <div className="text-center text-gray-500 text-sm py-4 pulse">Loading…</div>}
-          {stats && (
-            <div className="grid grid-cols-3 gap-3 mb-4">
-              <div className="bg-gray-700/50 rounded-xl p-3 text-center">
-                <div className="text-2xl font-black text-orange-400">{stats.total_sessions}</div>
-                <div className="text-xs text-gray-400 mt-1">Sessions</div>
-              </div>
-              <div className="bg-gray-700/50 rounded-xl p-3 text-center">
-                <div className="text-2xl font-black text-orange-400">{stats.total_hours}</div>
-                <div className="text-xs text-gray-400 mt-1">Hours</div>
-              </div>
-              <div className="bg-gray-700/50 rounded-xl p-3 text-center">
-                <div className="text-2xl font-black text-orange-400">{stats.favourite_temp_f != null ? stats.favourite_temp_f + '°' : '—'}</div>
-                <div className="text-xs text-gray-400 mt-1">Fav temp</div>
-              </div>
-            </div>
-          )}
-          {history && history.length === 0 && (
-            <p className="text-gray-500 text-sm text-center py-2">No completed sessions yet</p>
-          )}
-          {history && history.length > 0 && (
-            <div className="space-y-2">
-              {history.map(b => {
-                const d = new Date(b.date + 'T12:00:00');
-                const dateLabel = d.toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
-                const statusColor = b.status === 'completed' ? 'text-green-400' : 'text-gray-500';
-                return (
-                  <div key={b.id} className="flex items-center justify-between px-3 py-2.5 bg-gray-700/50 rounded-xl">
-                    <div>
-                      <div className="text-sm font-semibold text-white">{dateLabel}</div>
-                      <div className="text-xs text-gray-400">{fmtTime(b.start_time)}–{fmtTime(b.end_time)} · {b.on_time} min · {fmtC(b.target_temp)}</div>
-                    </div>
-                    <span className={`text-xs font-semibold capitalize ${statusColor}`}>{b.status}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
     </>
   );
 }
@@ -1507,9 +1547,9 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
 
   const isAdmin = currentMember?.is_admin;
 
-  // Only this user's bookings that are active or starting within 90 min
+  // Bookings this user owns or joined that are active or starting within 90 min
   const relevantBookings = bookings.filter(b => {
-    if (b.member_id !== currentMember?.id) return false;
+    if (b.member_id !== currentMember?.id && !b.joined) return false;
     if (b.date !== todayStr) return false;
     if (b.status === 'cancelled' || b.status === 'completed') return false;
     const start = new Date(`${b.date}T${b.start_time}`);
@@ -1517,7 +1557,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
     return end > now && (start - now) / 60000 <= 90;
   });
 
-  // Admins always unlocked; others need their own booking within 90 min
+  // Admins always unlocked; others need an owned or joined booking within 90 min
   const unlocked = isAdmin || relevantBookings.length > 0;
 
   // Live member profile (always up-to-date from the members list)
@@ -3082,8 +3122,10 @@ function MainApp({ currentMember, onLogout }) {
   const [bookDefaultTime, setBookDefaultTime] = useState(null);
   const [bookDefaultDate, setBookDefaultDate] = useState(null);
   const [selectedSlot, setSelectedSlot] = useState(null);
-  const [tab, setTab] = useState('home'); // home | schedule | more | settings
+  const [tab, setTab] = useState('home'); // home | schedule | history | settings
   const [pendingEditMemberId, setPendingEditMemberId] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
   const tempUnitValue = useTempUnitValue();
   // Controls form state lives here (not in Controls) so a user-chosen temp/duration
   // survives the Controls component unmounting on tab switches.
@@ -3134,6 +3176,16 @@ function MainApp({ currentMember, onLogout }) {
     }
   }
 
+  async function loadHistory() {
+    setHistoryLoading(true);
+    try {
+      const h = await api(`/api/bookings/history?member_id=${currentMember.id}&include_joinable=1`);
+      setHistory(h);
+    } catch {} finally {
+      setHistoryLoading(false);
+    }
+  }
+
   useEffect(() => {
     NativeBridge.repostLiveActivityTokens();
     api('/api/config').then(cfg => {
@@ -3171,6 +3223,7 @@ function MainApp({ currentMember, onLogout }) {
     loadMembers();
     loadPresets();
     loadPendingCount();
+    loadHistory();
     // Only poll pending count (DB-only, no Harvia API hit).
     // Status is fetched on load, after button presses, and on manual refresh only.
     const interval = setInterval(loadPendingCount, 300000); // 5 min
@@ -3221,6 +3274,7 @@ function MainApp({ currentMember, onLogout }) {
       if (e.data?.type === 'OPEN_BOOKING') {
         setTab('schedule');
         loadBookings();
+        loadHistory();
         loadStatus();
       } else if (e.data?.type === 'OPEN_TAB') {
         setTab(e.data.tab === 'controls' ? 'home' : e.data.tab);
@@ -3236,6 +3290,7 @@ function MainApp({ currentMember, onLogout }) {
     function onVisible() {
       if (!document.hidden) {
         loadBookings();
+        loadHistory();
         if (status?.active === 1) loadStatus(true);
       }
     }
@@ -3323,7 +3378,7 @@ function MainApp({ currentMember, onLogout }) {
         saved++;
       } catch { failed.push(item); }
     }
-    if (saved > 0) { toast(`${saved} queued booking${saved > 1 ? 's' : ''} saved!`, 'success'); loadBookings(); }
+    if (saved > 0) { toast(`${saved} queued booking${saved > 1 ? 's' : ''} saved!`, 'success'); loadBookings(); loadHistory(); }
     if (failed.length > 0) localStorage.setItem('pendingBookings', JSON.stringify(failed));
     else localStorage.removeItem('pendingBookings');
   }
@@ -3344,6 +3399,7 @@ function MainApp({ currentMember, onLogout }) {
       toast('Booking saved!', 'success');
       setShowBookModal(false);
       loadBookings();
+      loadHistory();
     } catch(e) {
       if (!navigator.onLine) {
         const queue = JSON.parse(localStorage.getItem('pendingBookings') || '[]');
@@ -3366,6 +3422,7 @@ function MainApp({ currentMember, onLogout }) {
       toast('Booking cancelled', 'info');
       setSelectedSlot(null);
       loadBookings();
+      loadHistory();
     } catch(e) { toast(e.message, 'error'); }
   }
 
@@ -3377,6 +3434,7 @@ function MainApp({ currentMember, onLogout }) {
       toast('Booking updated!', 'success');
       setEditingBooking(null);
       loadBookings();
+      loadHistory();
     } catch(e) { toast(e.message, 'error'); }
   }
 
@@ -3400,24 +3458,35 @@ function MainApp({ currentMember, onLogout }) {
       toast('Preheating started!', 'success');
       setSelectedSlot(null);
       loadBookings();
+      loadHistory();
       loadStatus();
     } catch(e) { toast(e.message, 'error'); }
   }
 
   const { pullY, refreshing: pullRefreshing, atThreshold } = usePullToRefresh(
-    () => Promise.all([loadBookings(), loadStatus()]),
+    () => Promise.all([loadBookings(), loadHistory(), loadStatus()]),
     true   // enabled on all tabs
   );
 
   function handleEmptyTimelineClick(t, date) {
     if (members.length === 0) {
       toast('Add a family member first', 'info');
-      setTab('more');
+      setTab('settings');
       return;
     }
     setBookDefaultDate(date || today);
     setBookDefaultTime(t);
     setShowBookModal(true);
+  }
+
+  async function handleJoinBooking(id) {
+    try {
+      const result = await api(`/api/bookings/${id}/join`, {method:'POST'});
+      toast('Session joined', 'success');
+      if (result?.booking && selectedSlot?.id === id) setSelectedSlot(result.booking);
+      loadBookings();
+      loadHistory();
+    } catch(e) { toast(e.message, 'error'); }
   }
 
   const nowStr = timeStr(new Date());
@@ -3478,13 +3547,13 @@ function MainApp({ currentMember, onLogout }) {
         const tabs = [
           {id:'home',     label:'Home'},
           {id:'schedule', label:'Schedule'},
-          {id:'more',     label:'More', badge: currentMember?.is_admin ? pendingCount : 0},
-          {id:'settings', label:'Settings'},
+          {id:'history',  label:'History'},
+          {id:'settings', label:'Settings', badge: currentMember?.is_admin ? pendingCount : 0},
         ];
         const tabIcon = {
           home:     <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>,
           schedule: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>,
-          more:     <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>,
+          history:  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/><path d="M12 7v5l3 2"/></svg>,
           settings: <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
         };
         const TopBtn = t => (
@@ -3553,10 +3622,11 @@ function MainApp({ currentMember, onLogout }) {
             manuallySet={ctrlManuallySet}
             setManuallySet={setCtrlManuallySet}
             onOpenSchedule={() => setTab('schedule')}
-            onOpenMore={() => setTab('more')}
+            onOpenMore={() => setTab('settings')}
             onSlotClick={setSelectedSlot}
             onEmptyClick={handleEmptyTimelineClick}
             onPreheat={handlePreheat}
+            onJoin={handleJoinBooking}
             loadingBookings={bookingsLoading}
           />
         )}
@@ -3567,22 +3637,20 @@ function MainApp({ currentMember, onLogout }) {
             loading={bookingsLoading}
             onCardPress={setSelectedSlot}
             onPreheat={handlePreheat}
+            onJoin={handleJoinBooking}
             onRefresh={loadBookings}
             onBookNew={date => handleEmptyTimelineClick(nowStr, date)}
             bookingWindowDays={bookingWindowDays}
           />
         )}
 
-        {tab === 'more' && (
-          <MorePanel
-            currentMember={currentMember}
-            members={members}
-            presets={presets}
-            pendingCount={pendingCount}
-            onReloadMembers={() => { loadMembers(); loadBookings(); loadPendingCount(); }}
-            onReloadPresets={loadPresets}
-            pendingEditMemberId={pendingEditMemberId}
-            onConsumeEditMemberId={() => setPendingEditMemberId(null)}
+        {tab === 'history' && (
+          <HistoryPanel
+            sessions={history}
+            loading={historyLoading}
+            onRefresh={loadHistory}
+            onCardPress={setSelectedSlot}
+            onJoin={handleJoinBooking}
           />
         )}
 
@@ -3599,8 +3667,14 @@ function MainApp({ currentMember, onLogout }) {
             onShowHelp={() => setShowHelp(true)}
             onEditProfile={() => {
               if (currentMember?.id) setPendingEditMemberId(currentMember.id);
-              setTab('more');
             }}
+            members={members}
+            presets={presets}
+            pendingCount={pendingCount}
+            onReloadMembers={() => { loadMembers(); loadBookings(); loadHistory(); loadPendingCount(); }}
+            onReloadPresets={loadPresets}
+            pendingEditMemberId={pendingEditMemberId}
+            onConsumeEditMemberId={() => setPendingEditMemberId(null)}
           />
         )}
       </main>
@@ -3623,6 +3697,7 @@ function MainApp({ currentMember, onLogout }) {
           onClose={()=>setSelectedSlot(null)}
           onCancel={handleCancelBooking}
           onPreheat={handlePreheat}
+          onJoin={handleJoinBooking}
           onEdit={b => { setSelectedSlot(null); setEditingBooking(b); }}
           currentMember={currentMember}
         />

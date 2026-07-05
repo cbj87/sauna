@@ -121,6 +121,7 @@ class Booking(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     member = relationship("FamilyMember", back_populates="bookings")
+    participants = relationship("BookingParticipant", back_populates="booking", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict:
         return {
@@ -135,6 +136,32 @@ class Booking(Base):
             "on_time": self.on_time,
             "status": self.status,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class BookingParticipant(Base):
+    __tablename__ = "booking_participants"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False)
+    member_id = Column(Integer, ForeignKey("family_members.id", ondelete="CASCADE"), nullable=False)
+    joined_at = Column(DateTime, default=datetime.utcnow)
+
+    booking = relationship("Booking", back_populates="participants")
+    member = relationship("FamilyMember")
+
+    __table_args__ = (
+        UniqueConstraint("booking_id", "member_id", name="uq_booking_participant_member"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "booking_id": self.booking_id,
+            "member_id": self.member_id,
+            "member_name": self.member.name if self.member else None,
+            "member_color": self.member.color if self.member else None,
+            "joined_at": self.joined_at.isoformat() if self.joined_at else None,
         }
 
 
