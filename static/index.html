@@ -506,6 +506,121 @@ function TodaySessionList({ bookings, onOpenSchedule, onEmptyAction, emptyAction
   );
 }
 
+function SaunaTimer() {
+  const [expanded, setExpanded] = useState(false);
+  const [timerEnd, setTimerEnd] = useState(null);
+  const [remainingMs, setRemainingMs] = useState(0);
+  const wakeLockRef = useRef(null);
+  const running = remainingMs > 0;
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const timeLabel = `${pad(minutes)}:${pad(seconds)}`;
+
+  async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    try {
+      wakeLockRef.current = await navigator.wakeLock.request('screen');
+    } catch {}
+  }
+
+  async function releaseWakeLock() {
+    try {
+      await wakeLockRef.current?.release();
+    } catch {}
+    wakeLockRef.current = null;
+  }
+
+  function startTimer(mins) {
+    setExpanded(true);
+    setTimerEnd(Date.now() + mins * 60000);
+    setRemainingMs(mins * 60000);
+    requestWakeLock();
+  }
+
+  function stopTimer() {
+    setTimerEnd(null);
+    setRemainingMs(0);
+  }
+
+  useEffect(() => {
+    if (!timerEnd) return;
+    const tick = () => {
+      const next = Math.max(0, timerEnd - Date.now());
+      setRemainingMs(next);
+      if (next <= 0) setTimerEnd(null);
+    };
+    tick();
+    const interval = setInterval(tick, 250);
+    return () => clearInterval(interval);
+  }, [timerEnd]);
+
+  useEffect(() => {
+    if (running) requestWakeLock();
+    else releaseWakeLock();
+    return () => { if (!running) releaseWakeLock(); };
+  }, [running]);
+
+  useEffect(() => {
+    function onVisible() {
+      if (!document.hidden && running) requestWakeLock();
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [running]);
+
+  useEffect(() => () => { releaseWakeLock(); }, []);
+
+  return (
+    <section className={`overflow-hidden rounded-2xl border transition-colors ${running ? 'border-orange-500/60 bg-black' : 'border-white/10 bg-gray-800/80'}`}>
+      <button onClick={() => !running && setExpanded(v => !v)}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
+        <div>
+          <h2 className="text-lg font-black tracking-tight">Timer</h2>
+          <p className="text-xs text-gray-500">{running ? 'Screen stays awake while running' : 'Quick sauna session countdown'}</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {running && <span className="font-mono text-xl font-black text-orange-300">{timeLabel}</span>}
+          {!running && <span className={`text-gray-500 text-xs transition-transform duration-200 inline-block ${expanded ? 'rotate-180' : ''}`}>▾</span>}
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-white/10 px-4 pb-4 pt-3">
+          {running ? (
+            <div className="space-y-4">
+              <div className="rounded-2xl bg-orange-500 px-4 py-8 text-center text-black">
+                <div className="font-mono text-7xl font-black leading-none tracking-normal sm:text-8xl">{timeLabel}</div>
+                <div className="mt-2 text-sm font-black uppercase tracking-wide">remaining</div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => startTimer(10)}
+                  className="rounded-xl bg-white/10 px-3 py-3 text-sm font-black text-gray-200 hover:bg-white/15">
+                  Restart 10
+                </button>
+                <button onClick={stopTimer}
+                  className="rounded-xl bg-red-900/80 px-3 py-3 text-sm font-black text-red-100 hover:bg-red-800">
+                  Stop
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 gap-2">
+              {[10, 15, 20].map(mins => (
+                <button key={mins} onClick={() => startTimer(mins)}
+                  className="rounded-xl bg-orange-500 px-3 py-4 text-center text-black hover:bg-orange-400">
+                  <span className="block text-2xl font-black leading-none">{mins}</span>
+                  <span className="mt-1 block text-xs font-black uppercase tracking-wide">min</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function HomePanel({
   status, statusUpdatedAt, bookings, members, presets, currentMember, onRefresh, onBook,
   toast, tempF, setTempF, duration, setDuration, manuallySet, setManuallySet,
@@ -690,6 +805,8 @@ function HomePanel({
           <button onClick={() => onOpenMore?.()} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-gray-200 hover:bg-white/15">Settings</button>
         </div>
       </section>
+
+      <SaunaTimer />
 
       <section>
         <div className="mb-3 flex items-center justify-between">
