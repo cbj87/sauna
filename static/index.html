@@ -119,7 +119,6 @@
     /* Strip iOS-imposed intrinsic width so the input respects our layout */
     input[type=time] { -webkit-appearance: none; appearance: none; width: 100%; box-sizing: border-box; }
     .status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 9999px; font-size: 0.85rem; font-weight: 600; }
-    .timeline-slot { position: absolute; border-radius: 6px; padding: 4px 8px; font-size: 0.75rem; font-weight: 600; overflow: hidden; cursor: pointer; }
     .fade-in { animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
     @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     .pulse { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
@@ -132,13 +131,11 @@
       .pwa-bottom-nav { display: block !important; }
       .pwa-header     { padding-top: calc(1rem + env(safe-area-inset-top)) !important; }
       .pwa-main       { padding-bottom: calc(5rem + env(safe-area-inset-bottom)) !important; }
-      .pwa-fab        { bottom: calc(4.75rem + env(safe-area-inset-bottom)) !important; }
     }
     .native-wrapper .pwa-top-nav    { display: none !important; }
     .native-wrapper .pwa-bottom-nav { display: block !important; }
     .native-wrapper .pwa-header     { padding-top: calc(1rem + env(safe-area-inset-top)) !important; }
     .native-wrapper .pwa-main       { padding-bottom: calc(5rem + env(safe-area-inset-bottom)) !important; }
-    .native-wrapper .pwa-fab        { bottom: calc(4.75rem + env(safe-area-inset-bottom)) !important; }
   </style>
 </head>
 <body>
@@ -410,201 +407,6 @@ function StatusPill({ status }) {
   return <span className="status-pill bg-gray-700 text-gray-400">💤 Off — {fmtF(tempF)}</span>;
 }
 
-// ─── timeline ────────────────────────────────────────────────────────────────
-// ─── day strip ───────────────────────────────────────────────────────────────
-// Thin horizontal overview bar: 6 AM → midnight, colored blocks, now-line.
-function DayStrip({ bookings, members, onSlotClick, onEmptyClick, loading }) {
-  const STRIP_START = 6;
-  const STRIP_END   = 24;
-  const TOTAL_HRS   = STRIP_END - STRIP_START;
-
-  const toFrac = t => {
-    const [h, m] = t.split(':').map(Number);
-    return Math.max(0, Math.min(1, (h + m / 60 - STRIP_START) / TOTAL_HRS));
-  };
-
-  const now = new Date();
-  const nowFrac = (now.getHours() + now.getMinutes() / 60 - STRIP_START) / TOTAL_HRS;
-  const showNow = nowFrac >= 0 && nowFrac <= 1;
-
-  function handleClick(e) {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const frac = (e.clientX - rect.left) / rect.width;
-    const totalMins = (STRIP_START + frac * TOTAL_HRS) * 60;
-    const h = Math.floor(totalMins / 60);
-    const m = Math.round((totalMins % 60) / 15) * 15;
-    onEmptyClick(`${pad(h >= 24 ? 23 : h)}:${pad(m >= 60 ? 45 : m)}`);
-  }
-
-  // Hour tick marks: every 3 hours (6, 9, 12, 15, 18, 21, 24)
-  const ticks = Array.from({length: TOTAL_HRS + 1}, (_, i) => STRIP_START + i).filter(h => h % 3 === 0);
-
-  return (
-    <div className="mb-4">
-      <div className="relative bg-gray-800 rounded-xl overflow-hidden cursor-pointer select-none"
-        style={{height: 44}} onClick={handleClick}>
-
-        {/* hour ticks */}
-        {ticks.map(h => (
-          <div key={h} className="absolute top-0 bottom-0 pointer-events-none"
-            style={{left: `${((h - STRIP_START) / TOTAL_HRS) * 100}%`}}>
-            <div className="w-px h-2 bg-gray-600/80 mt-auto" style={{marginTop: 26}} />
-          </div>
-        ))}
-
-        {/* booking blocks */}
-        {!loading && bookings.map(b => {
-          const left  = toFrac(b.start_time);
-          // Midnight-spanning: end_time < start_time → block goes to right edge
-          const rightT = b.end_time < b.start_time ? '24:00' : b.end_time;
-          const right = b.end_time < b.start_time ? 1 : toFrac(b.end_time);
-          if (left >= 1) return null;
-          const bMember = members.find(m => m.id === b.member_id);
-          const color = bMember?.color || b.member_color || '#6B7280';
-          return (
-            <div key={b.id}
-              className="absolute top-1.5 bottom-1.5 rounded cursor-pointer transition-opacity hover:opacity-100"
-              style={{
-                left: `${left * 100}%`,
-                width: `${Math.max(0.01, right - left) * 100}%`,
-                background: color + 'aa',
-                borderLeft: `2px solid ${color}`,
-                opacity: b.status === 'cancelled' ? 0.3 : 0.85,
-              }}
-              onClick={e => { e.stopPropagation(); onSlotClick(b); }}
-            />
-          );
-        })}
-
-        {/* loading shimmer */}
-        {loading && <div className="absolute inset-0 bg-gray-700/50 animate-pulse" />}
-
-        {/* now indicator */}
-        {showNow && (
-          <div className="absolute top-0 bottom-0 w-0.5 bg-orange-400 z-10 pointer-events-none"
-            style={{left: `${nowFrac * 100}%`}} />
-        )}
-      </div>
-
-      {/* axis labels */}
-      <div className="flex justify-between text-[9px] text-gray-600 mt-0.5 px-0.5 pointer-events-none select-none">
-        <span>6 AM</span><span>9</span><span>Noon</span><span>3 PM</span><span>6 PM</span><span>9</span><span>Mid</span>
-      </div>
-    </div>
-  );
-}
-
-// ─── booking card ─────────────────────────────────────────────────────────────
-function BookingCard({ booking: b, member, onPress, onPreheat, canPreheat }) {
-  const { fmtC } = useTempUnit();
-  const color = member?.color || b.member_color || '#6B7280';
-  const statusCls = {
-    active:     'bg-green-800/80 text-green-300',
-    preheating: 'bg-orange-900/80 text-orange-300',
-    completed:  'bg-gray-700 text-gray-500',
-    cancelled:  'bg-red-950 text-red-400',
-    scheduled:  'bg-gray-700/80 text-gray-300',
-  };
-  const isPulsing = b.status === 'active' || b.status === 'preheating';
-
-  // Format "23:00 – 01:00 (next day)" for midnight-spanning
-  const timeLabel = b.end_time < b.start_time
-    ? `${fmtTime(b.start_time)} – ${fmtTime(b.end_time)} (next day)`
-    : `${fmtTime(b.start_time)} – ${fmtTime(b.end_time)}`;
-
-  return (
-    <div className="bg-gray-800 rounded-2xl overflow-hidden cursor-pointer active:bg-gray-750 transition-colors fade-in"
-      style={{borderLeft: `4px solid ${color}`}}
-      onClick={onPress}>
-      <div className="px-4 py-3 flex items-center gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="font-bold text-sm leading-none" style={{color}}>{b.member_name}</span>
-            <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold capitalize leading-none ${statusCls[b.status] || statusCls.scheduled} ${isPulsing ? 'pulse' : ''}`}>
-              {b.status}
-            </span>
-          </div>
-          <div className="text-white font-semibold text-sm">{timeLabel}</div>
-          <div className="text-xs text-gray-500 mt-0.5">{fmtC(b.target_temp)} · {b.on_time} min</div>
-        </div>
-        {canPreheat && (
-          <button
-            onClick={e => { e.stopPropagation(); onPreheat(); }}
-            className="flex-shrink-0 bg-orange-500 hover:bg-orange-400 active:bg-orange-600 text-white text-xs font-bold px-3 py-2 rounded-xl transition-colors">
-            🔥 Preheat
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─── day row (stacked week view) ──────────────────────────────────────────────
-function DayRow({ date, bookings, members, expanded, onToggle, onSlotClick, onEmptyClick, onCardPress, onPreheat, loading }) {
-  const todayIso = localDate(new Date());
-  const isToday  = date === todayIso;
-  const d        = new Date(date + 'T12:00:00');
-  const dayLabel = isToday
-    ? 'Today'
-    : d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-  const count = bookings.length;
-
-  return (
-    <div className="rounded-2xl overflow-hidden mb-3" style={{background:'rgba(31,41,55,0.6)'}}>
-      {/* header row — tap to expand/collapse */}
-      <div className="flex items-center gap-3 px-4 pt-3 pb-1 cursor-pointer select-none" onClick={onToggle}>
-        <div className="flex-1 flex items-center gap-2 flex-wrap">
-          <span className={`font-bold text-sm ${isToday ? 'text-orange-400' : 'text-white'}`}>{dayLabel}</span>
-          {count > 0 && (
-            <span className="bg-gray-700 text-gray-400 text-[10px] font-semibold px-2 py-0.5 rounded-full leading-none">
-              {count} session{count !== 1 ? 's' : ''}
-            </span>
-          )}
-        </div>
-        <span className={`text-gray-500 text-xs transition-transform duration-200 inline-block ${expanded ? 'rotate-180' : ''}`}>▾</span>
-      </div>
-
-      {/* timeline strip — always visible */}
-      <div className="px-4 pb-2">
-        <DayStrip
-          bookings={bookings}
-          members={members}
-          onSlotClick={onSlotClick}
-          onEmptyClick={onEmptyClick}
-          loading={loading}
-        />
-      </div>
-
-      {/* booking cards — shown when expanded */}
-      {expanded && (
-        <div className="px-4 pb-3 space-y-2">
-          {loading ? (
-            <><Skeleton className="h-20" /><Skeleton className="h-20" /></>
-          ) : count > 0 ? (
-            bookings.map(b => {
-              const bMember   = members.find(m => m.id === b.member_id);
-              const minsUntil = (new Date(`${b.date}T${b.start_time}`) - new Date()) / 60000;
-              const canPreheat = b.status === 'scheduled' && minsUntil <= 90 && minsUntil > 0;
-              return (
-                <BookingCard
-                  key={b.id}
-                  booking={b}
-                  member={bMember}
-                  onPress={() => onCardPress(b)}
-                  onPreheat={() => onPreheat(b.id)}
-                  canPreheat={canPreheat}
-                />
-              );
-            })
-          ) : (
-            <p className="text-center text-gray-600 text-sm py-4">No sessions — tap the timeline to add one</p>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function activeBookingForNow(bookings, saunaOn) {
   if (!saunaOn) return null;
   const now = new Date();
@@ -640,7 +442,9 @@ function todayBookingsFor(bookings) {
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
 }
 
-function TodaySessionList({ bookings, onOpenSchedule, onPress, onPreheat, loading }) {
+function TodaySessionList({ bookings, onOpenSchedule, onEmptyAction, emptyActionLabel = 'Book a session', onPress, onPreheat, loading }) {
+  const handleEmptyAction = onEmptyAction || onOpenSchedule;
+
   if (loading) {
     return (
       <div className="space-y-3">
@@ -654,7 +458,9 @@ function TodaySessionList({ bookings, onOpenSchedule, onPress, onPreheat, loadin
     return (
       <div className="rounded-2xl border border-white/10 bg-gray-800/80 px-4 py-5 text-center">
         <div className="text-sm font-bold text-white">No sessions booked yet</div>
-        <button onClick={onOpenSchedule} className="mt-2 text-xs font-bold text-orange-400 hover:text-orange-300">Book a session</button>
+        {handleEmptyAction && (
+          <button onClick={handleEmptyAction} className="mt-2 text-xs font-bold text-orange-400 hover:text-orange-300">{emptyActionLabel}</button>
+        )}
       </div>
     );
   }
@@ -900,19 +706,26 @@ function HomePanel({
 }
 
 function SchedulePanel({
-  bookings, members, expandedDays, setExpandedDays, loading, onSlotClick,
-  onEmptyClick, onCardPress, onPreheat, onRefresh, bookingWindowDays,
+  bookings, loading, onCardPress, onPreheat, onRefresh, onBookNew, bookingWindowDays,
 }) {
   const [selectedDate, setSelectedDate] = useState(localDate(new Date()));
   const daysToShow = Math.min(bookingWindowDays || 30, 14);
-
-  useEffect(() => {
-    setExpandedDays(prev => {
-      const next = new Set(prev);
-      next.add(selectedDate);
-      return next;
-    });
-  }, [selectedDate]);
+  const visibleDays = Array.from({length: 7}, (_, i) => {
+    const base = new Date(`${selectedDate}T12:00:00`);
+    base.setDate(base.getDate() + i);
+    const iso = localDate(base);
+    const label = iso === localDate(new Date())
+      ? 'Today'
+      : base.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+    return {
+      iso,
+      label,
+      bookings: bookings
+        .filter(b => b.date === iso)
+        .sort((a, b) => a.start_time.localeCompare(b.start_time)),
+    };
+  });
+  const hasVisibleBookings = visibleDays.some(day => day.bookings.length > 0);
 
   return (
     <div className="space-y-5">
@@ -921,7 +734,10 @@ function SchedulePanel({
           <h2 className="text-xl font-black tracking-tight">Schedule</h2>
           <p className="text-sm text-gray-500">Book, edit, or preheat sessions</p>
         </div>
-        <button onClick={onRefresh} className="rounded-xl bg-gray-800 px-3 py-2 text-xs font-bold text-gray-400 hover:text-gray-200">↻</button>
+        <div className="flex gap-2">
+          <button onClick={() => onBookNew?.(selectedDate)} className="rounded-xl bg-orange-500 px-3 py-2 text-xs font-black text-black hover:bg-orange-400">Book</button>
+          <button onClick={onRefresh} className="rounded-xl bg-gray-800 px-3 py-2 text-xs font-bold text-gray-400 hover:text-gray-200">↻</button>
+        </div>
       </div>
 
       <div className="flex gap-2 overflow-x-auto pb-1">
@@ -939,33 +755,32 @@ function SchedulePanel({
         })}
       </div>
 
-      <div>
-        {Array.from({length: 7}, (_, i) => {
-          const base = new Date(`${selectedDate}T12:00:00`);
-          base.setDate(base.getDate() + i);
-          const iso = localDate(base);
-          const dayBookings = bookings.filter(b => b.date === iso);
-          const expanded = expandedDays.has(iso);
-          return (
-            <DayRow
-              key={iso}
-              date={iso}
-              bookings={dayBookings}
-              members={members}
-              expanded={expanded}
-              onToggle={() => setExpandedDays(prev => {
-                const next = new Set(prev);
-                next.has(iso) ? next.delete(iso) : next.add(iso);
-                return next;
-              })}
-              onSlotClick={onSlotClick}
-              onEmptyClick={t => onEmptyClick(t, iso)}
-              onCardPress={onCardPress}
+      <div className="space-y-5">
+        {hasVisibleBookings ? visibleDays.filter(day => day.bookings.length > 0).map(day => (
+          <section key={day.iso}>
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h3 className={`text-lg font-black tracking-tight ${day.iso === localDate(new Date()) ? 'text-orange-400' : 'text-white'}`}>{day.label}</h3>
+                <p className="text-xs text-gray-500">{day.bookings.length} session{day.bookings.length === 1 ? '' : 's'} scheduled</p>
+              </div>
+            </div>
+            <TodaySessionList
+              bookings={day.bookings}
+              onPress={onCardPress}
               onPreheat={onPreheat}
               loading={loading}
             />
-          );
-        })}
+          </section>
+        )) : (
+          <TodaySessionList
+            bookings={[]}
+            onEmptyAction={() => onBookNew?.(selectedDate)}
+            emptyActionLabel="Book a session"
+            onPress={onCardPress}
+            onPreheat={onPreheat}
+            loading={loading}
+          />
+        )}
       </div>
     </div>
   );
@@ -1120,7 +935,7 @@ function HelpModal({ onClose }) {
   const faqs = [
     {
       q: 'How do I book a session?',
-      a: 'Tap the + button or tap anywhere on a day\'s timeline. Pick your date, start time, duration, and target temperature, then tap Review → Confirm. Your session will appear on the schedule.',
+      a: 'Tap Book from the home or schedule screen. Pick your date, start time, duration, and target temperature, then tap Review → Confirm. Your session will appear on the schedule.',
     },
     {
       q: 'How do I change or cancel a booking?',
@@ -3292,7 +3107,6 @@ function MainApp({ currentMember, onLogout }) {
 
   const today = localDate(new Date());
   const [bookingsLoading, setBookingsLoading] = useState(true);
-  const [expandedDays, setExpandedDays] = useState(() => new Set([today]));
 
   const [statusUpdatedAt, setStatusUpdatedAt] = useState(null);
 
@@ -3750,15 +3564,11 @@ function MainApp({ currentMember, onLogout }) {
         {tab === 'schedule' && (
           <SchedulePanel
             bookings={bookings}
-            members={members}
-            expandedDays={expandedDays}
-            setExpandedDays={setExpandedDays}
             loading={bookingsLoading}
-            onSlotClick={setSelectedSlot}
-            onEmptyClick={handleEmptyTimelineClick}
             onCardPress={setSelectedSlot}
             onPreheat={handlePreheat}
             onRefresh={loadBookings}
+            onBookNew={date => handleEmptyTimelineClick(nowStr, date)}
             bookingWindowDays={bookingWindowDays}
           />
         )}
@@ -3794,20 +3604,6 @@ function MainApp({ currentMember, onLogout }) {
           />
         )}
       </main>
-
-      {/* FAB */}
-      {(tab === 'home' || tab === 'schedule') && (
-        <button
-          onClick={() => {
-            if (members.length === 0) { toast('Add a family member first','info'); setTab('more'); return; }
-            setBookDefaultDate(today);
-            setBookDefaultTime(nowStr);
-            setShowBookModal(true);
-          }}
-          className="pwa-fab fixed bottom-6 right-6 bg-orange-500 hover:bg-orange-400 text-white rounded-full w-14 h-14 text-2xl shadow-xl flex items-center justify-center z-40 transition-all active:scale-95">
-          +
-        </button>
-      )}
 
       {/* modals */}
       {showBookModal && (
