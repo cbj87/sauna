@@ -3262,7 +3262,7 @@ def booking_history():
                 (Booking.member_id == req_id) | (BookingParticipant.member_id == req_id)
             )
         q = q.distinct()
-        bookings = q.order_by(Booking.date.desc(), Booking.start_time.desc()).limit(50).all()
+        bookings = q.order_by(Booking.date.desc(), Booking.start_time.desc()).limit(500).all()
         return jsonify([_booking_to_dict_for(b, member) for b in bookings])
     finally:
         db.close()
