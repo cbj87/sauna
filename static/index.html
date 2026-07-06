@@ -510,8 +510,13 @@ function SaunaTimer() {
   const [expanded, setExpanded] = useState(false);
   const [timerEnd, setTimerEnd] = useState(null);
   const [remainingMs, setRemainingMs] = useState(0);
+  const [selectedMinutes, setSelectedMinutes] = useState(15);
+  const [customMinutes, setCustomMinutes] = useState(25);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [paused, setPaused] = useState(false);
   const wakeLockRef = useRef(null);
-  const running = remainingMs > 0;
+  const active = remainingMs > 0;
+  const running = active && !paused;
   const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
@@ -531,16 +536,33 @@ function SaunaTimer() {
     wakeLockRef.current = null;
   }
 
-  function startTimer(mins) {
+  function startTimer(mins, remember = true) {
+    const safeMins = Math.max(1, Math.min(240, Number(mins) || 15));
+    if (remember) setSelectedMinutes(safeMins);
     setExpanded(true);
-    setTimerEnd(Date.now() + mins * 60000);
-    setRemainingMs(mins * 60000);
+    setPaused(false);
+    setTimerEnd(Date.now() + safeMins * 60000);
+    setRemainingMs(safeMins * 60000);
     requestWakeLock();
   }
 
   function stopTimer() {
     setTimerEnd(null);
     setRemainingMs(0);
+    setPaused(false);
+  }
+
+  function pauseTimer() {
+    if (!active || paused) return;
+    setPaused(true);
+    setTimerEnd(null);
+  }
+
+  function resumeTimer() {
+    if (!active || !paused) return;
+    setPaused(false);
+    setTimerEnd(Date.now() + remainingMs);
+    requestWakeLock();
   }
 
   useEffect(() => {
@@ -548,7 +570,10 @@ function SaunaTimer() {
     const tick = () => {
       const next = Math.max(0, timerEnd - Date.now());
       setRemainingMs(next);
-      if (next <= 0) setTimerEnd(null);
+      if (next <= 0) {
+        setTimerEnd(null);
+        setPaused(false);
+      }
     };
     tick();
     const interval = setInterval(tick, 250);
@@ -572,31 +597,35 @@ function SaunaTimer() {
   useEffect(() => () => { releaseWakeLock(); }, []);
 
   return (
-    <section className={`overflow-hidden rounded-2xl border transition-colors ${running ? 'border-orange-500/60 bg-black' : 'border-white/10 bg-gray-800/80'}`}>
-      <button onClick={() => !running && setExpanded(v => !v)}
+    <section className={`overflow-hidden rounded-2xl border transition-colors ${active ? 'border-orange-500/60 bg-black' : 'border-white/10 bg-gray-800/80'}`}>
+      <button onClick={() => !active && setExpanded(v => !v)}
         className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
         <div>
           <h2 className="text-lg font-black tracking-tight">Timer</h2>
-          <p className="text-xs text-gray-500">{running ? 'Screen stays awake while running' : 'Quick sauna session countdown'}</p>
+          <p className="text-xs text-gray-500">{active ? (paused ? 'Paused' : 'Screen stays awake while running') : 'Quick sauna session countdown'}</p>
         </div>
         <div className="flex items-center gap-3">
-          {running && <span className="font-mono text-xl font-black text-orange-300">{timeLabel}</span>}
-          {!running && <span className={`text-gray-500 text-xs transition-transform duration-200 inline-block ${expanded ? 'rotate-180' : ''}`}>▾</span>}
+          {active && <span className="font-mono text-xl font-black text-orange-300">{timeLabel}</span>}
+          {!active && <span className={`text-gray-500 text-xs transition-transform duration-200 inline-block ${expanded ? 'rotate-180' : ''}`}>▾</span>}
         </div>
       </button>
 
       {expanded && (
         <div className="border-t border-white/10 px-4 pb-4 pt-3">
-          {running ? (
+          {active ? (
             <div className="space-y-4">
               <div className="rounded-2xl bg-orange-500 px-4 py-8 text-center text-black">
                 <div className="font-mono text-7xl font-black leading-none tracking-normal sm:text-8xl">{timeLabel}</div>
-                <div className="mt-2 text-sm font-black uppercase tracking-wide">remaining</div>
+                <div className="mt-2 text-sm font-black uppercase tracking-wide">{paused ? 'paused' : 'remaining'}</div>
               </div>
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => startTimer(10)}
+              <div className="grid grid-cols-3 gap-2">
+                <button onClick={() => paused ? resumeTimer() : pauseTimer()}
                   className="rounded-xl bg-white/10 px-3 py-3 text-sm font-black text-gray-200 hover:bg-white/15">
-                  Restart 10
+                  {paused ? 'Resume' : 'Pause'}
+                </button>
+                <button onClick={() => startTimer(selectedMinutes, false)}
+                  className="rounded-xl bg-white/10 px-3 py-3 text-sm font-black text-gray-200 hover:bg-white/15">
+                  Reset {selectedMinutes}
                 </button>
                 <button onClick={stopTimer}
                   className="rounded-xl bg-red-900/80 px-3 py-3 text-sm font-black text-red-100 hover:bg-red-800">
@@ -605,14 +634,32 @@ function SaunaTimer() {
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-2">
-              {[10, 15, 20].map(mins => (
-                <button key={mins} onClick={() => startTimer(mins)}
-                  className="rounded-xl bg-orange-500 px-3 py-4 text-center text-black hover:bg-orange-400">
-                  <span className="block text-2xl font-black leading-none">{mins}</span>
-                  <span className="mt-1 block text-xs font-black uppercase tracking-wide">min</span>
+            <div className="space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                {[15, 20].map(mins => (
+                  <button key={mins} onClick={() => startTimer(mins)}
+                    className="rounded-xl bg-orange-500 px-3 py-4 text-center text-black hover:bg-orange-400">
+                    <span className="block text-2xl font-black leading-none">{mins}</span>
+                    <span className="mt-1 block text-xs font-black uppercase tracking-wide">min</span>
+                  </button>
+                ))}
+                <button onClick={() => setCustomOpen(v => !v)}
+                  className={`rounded-xl px-3 py-4 text-center hover:bg-orange-400 ${customOpen ? 'bg-orange-400 text-black' : 'bg-orange-500 text-black'}`}>
+                  <span className="block text-lg font-black leading-none">Custom</span>
+                  <span className="mt-1 block text-xs font-black uppercase tracking-wide">timer</span>
                 </button>
-              ))}
+              </div>
+              {customOpen && (
+                <div className="grid grid-cols-[1fr_auto] gap-2">
+                  <input type="number" min="1" max="240" value={customMinutes}
+                    onChange={e => setCustomMinutes(e.target.value)}
+                    className="min-w-0 rounded-xl border border-white/10 bg-black/30 px-4 py-3 text-base font-black text-white outline-none focus:ring-2 focus:ring-orange-500" />
+                  <button onClick={() => startTimer(customMinutes)}
+                    className="rounded-xl bg-orange-500 px-4 py-3 text-sm font-black text-black hover:bg-orange-400">
+                    Start
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
