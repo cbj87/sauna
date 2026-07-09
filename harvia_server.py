@@ -21,12 +21,14 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, jsonify, request, send_from_directory, session
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.orm import selectinload
 from sqlalchemy.types import Integer as _SAInteger, Date as _SADate, Time as _SATime, Boolean as _SABoolean
 
 from harvia_client import HarviaClient
 from models import (
     DB_PATH,
     Booking,
+    BookingInvite,
     BookingParticipant,
     ControlLog,
     DeviceStateLog,
@@ -633,12 +635,19 @@ def _booking_to_dict_for(booking: Booking, viewer: FamilyMember | None = None) -
     )
     data["participants"] = [p.to_dict() for p in participants]
     participant_ids = {p.member_id for p in participants}
+    invites = sorted(
+        (i for i in (booking.invites or []) if i.member is not None),
+        key=lambda i: i.invited_at or datetime.min,
+    )
+    data["invites"] = [i.to_dict() for i in invites]
     if viewer is not None:
         data["joined"] = viewer.id == booking.member_id or viewer.id in participant_ids
         data["can_control"] = bool(viewer.is_admin) or data["joined"]
+        data["my_invite_status"] = next((i.status for i in invites if i.member_id == viewer.id), None)
     else:
         data["joined"] = False
         data["can_control"] = False
+        data["my_invite_status"] = None
     data["participant_count"] = len(participant_ids) + (0 if booking.member_id in participant_ids else 1)
     return data
 
@@ -658,6 +667,72 @@ def _can_control_booking(db, booking: Booking, member: FamilyMember) -> bool:
         or booking.member_id == member.id
         or _is_booking_participant(db, booking.id, member.id)
     )
+
+
+def _add_participant(db, booking: Booking, member_id: int) -> None:
+    """Insert-if-missing a BookingParticipant (grants control + Live Activity eligibility)."""
+    if booking.member_id == member_id or _is_booking_participant(db, booking.id, member_id):
+        return
+    db.add(BookingParticipant(booking_id=booking.id, member_id=member_id))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+    db.refresh(booking)
+
+
+def _booking_when_text(booking: Booking) -> str:
+    """Human date/time for notification bodies, e.g. 'Sat 12 Jul, 6:00 PM–7:00 PM'."""
+    day = booking.date.day
+    month = booking.date.strftime("%b")
+    weekday = booking.date.strftime("%a")
+    start_fmt = booking.start_time.strftime("%I:%M %p").lstrip("0")
+    end_fmt = booking.end_time.strftime("%I:%M %p").lstrip("0")
+    return f"{weekday} {day} {month}, {start_fmt}–{end_fmt}"
+
+
+def _create_invites(db, booking: Booking, inviter: FamilyMember, member_ids: list[int]) -> list[BookingInvite]:
+    """Create invite rows for members not already involved and push each an invite alert."""
+    skip_ids = {booking.member_id}
+    skip_ids.update(p.member_id for p in (booking.participants or []))
+    skip_ids.update(i.member_id for i in (booking.invites or []))
+
+    valid_ids = {
+        m.id for m in db.query(FamilyMember)
+        .filter(FamilyMember.id.in_(member_ids), FamilyMember.status == "approved")
+        .all()
+    }
+
+    created = []
+    for mid in member_ids:
+        if mid in skip_ids or mid not in valid_ids:
+            continue
+        skip_ids.add(mid)
+        invite = BookingInvite(
+            booking_id=booking.id,
+            member_id=mid,
+            invited_by=inviter.id,
+            status="invited",
+            invited_at=app_now(),
+        )
+        db.add(invite)
+        created.append(invite)
+    if not created:
+        return []
+    db.commit()
+    db.refresh(booking)
+
+    when = _booking_when_text(booking)
+    for invite in created:
+        _notify_member(invite.member_id, {
+            "title": "🔥 Sauna invite",
+            "body": f"{inviter.name} invited you — {when}",
+            "tag": f"invite-{booking.id}-{invite.member_id}",
+            "thread_id": "booking-invite",
+            "url": f"/?booking={booking.id}",
+            "bookingId": booking.id,
+        }, pref_key="invite")
+    return created
 
 
 def _booking_remaining_minutes(booking: Booking, now: datetime | None = None) -> int:
@@ -3136,7 +3211,11 @@ def list_bookings():
     date_to_str   = request.args.get("date_to")
     db = SessionLocal()
     try:
-        q = db.query(Booking).filter(Booking.status != "cancelled")
+        q = (
+            db.query(Booking)
+            .options(selectinload(Booking.participants), selectinload(Booking.invites))
+            .filter(Booking.status != "cancelled")
+        )
         if date_str:
             try:
                 d = date.fromisoformat(date_str)
@@ -3240,6 +3319,9 @@ def create_booking():
             db.add(booking)
             db.commit()
             db.refresh(booking)
+        invite_member_ids = body.get("invite_member_ids") or []
+        if isinstance(invite_member_ids, list) and all(isinstance(m, int) for m in invite_member_ids):
+            _create_invites(db, booking, member, invite_member_ids)
         if not member.is_admin:
             day = booking_date.day
             month = booking_date.strftime("%b")
@@ -3456,13 +3538,104 @@ def join_booking(booking_id: int):
         if booking.status == "cancelled":
             return err("Cannot join a cancelled session")
 
-        if booking.member_id != member.id and not _is_booking_participant(db, booking.id, member.id):
-            db.add(BookingParticipant(booking_id=booking.id, member_id=member.id))
-            try:
-                db.commit()
-            except IntegrityError:
-                db.rollback()
+        _add_participant(db, booking, member.id)
+        # Joining answers any outstanding invite
+        invite = db.query(BookingInvite).filter_by(booking_id=booking.id, member_id=member.id).first()
+        if invite and invite.status != "yes":
+            invite.status = "yes"
+            invite.responded_at = app_now()
+            db.commit()
             db.refresh(booking)
+
+        return jsonify({"ok": True, "booking": _booking_to_dict_for(booking, member)})
+    finally:
+        db.close()
+
+
+@app.route("/api/bookings/<int:booking_id>/invites", methods=["POST"])
+def invite_to_booking(booking_id: int):
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        booking = db.query(Booking).filter_by(id=booking_id).first()
+        if not booking:
+            return err("Booking not found", 404)
+        if booking.member_id != member.id and not member.is_admin:
+            return err("Only the booking owner can invite people", 403)
+        if booking.status in ("cancelled", "completed"):
+            return err(f"Cannot invite to a {booking.status} session")
+
+        body = request.get_json(silent=True) or {}
+        member_ids = body.get("member_ids") or []
+        if not isinstance(member_ids, list) or not all(isinstance(m, int) for m in member_ids):
+            return err("member_ids must be a list of member ids")
+
+        _create_invites(db, booking, member, member_ids)
+        return jsonify({"ok": True, "booking": _booking_to_dict_for(booking, member)})
+    finally:
+        db.close()
+
+
+@app.route("/api/bookings/<int:booking_id>/rsvp", methods=["POST"])
+def rsvp_booking(booking_id: int):
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        booking = db.query(Booking).filter_by(id=booking_id).first()
+        if not booking:
+            return err("Booking not found", 404)
+        if booking.status in ("cancelled", "completed"):
+            return err(f"Cannot RSVP to a {booking.status} session")
+        if booking.member_id == member.id:
+            return err("You're the host of this session")
+
+        body = request.get_json(silent=True) or {}
+        response = (body.get("response") or "").strip().lower()
+        if response not in ("yes", "no", "maybe"):
+            return err("response must be yes, no or maybe")
+
+        # Any approved member may RSVP — an uninvited RSVP (e.g. via a share
+        # link) creates its own invite row so the host sees it.
+        invite = db.query(BookingInvite).filter_by(booking_id=booking.id, member_id=member.id).first()
+        if not invite:
+            invite = BookingInvite(
+                booking_id=booking.id,
+                member_id=member.id,
+                invited_by=None,
+                invited_at=app_now(),
+            )
+            db.add(invite)
+        prev_status = invite.status
+        invite.status = response
+        invite.responded_at = app_now()
+        db.commit()
+
+        if response == "yes":
+            _add_participant(db, booking, member.id)
+        elif prev_status == "yes" and booking.status == "scheduled":
+            # Withdrawing a yes revokes control — but only before the session
+            # starts, so nobody loses extend/off rights mid-session.
+            participant = (
+                db.query(BookingParticipant)
+                .filter_by(booking_id=booking.id, member_id=member.id)
+                .first()
+            )
+            if participant:
+                db.delete(participant)
+                db.commit()
+        db.refresh(booking)
+
+        label = {"yes": "Yes 🎉", "no": "No", "maybe": "Maybe"}[response]
+        _notify_member(booking.member_id, {
+            "title": "📅 RSVP",
+            "body": f"{member.name} responded {label} — {_booking_when_text(booking)}",
+            "tag": f"rsvp-{booking.id}-{member.id}",
+            "thread_id": "booking-rsvp",
+            "url": f"/?booking={booking.id}",
+            "bookingId": booking.id,
+        }, pref_key="rsvp")
 
         return jsonify({"ok": True, "booking": _booking_to_dict_for(booking, member)})
     finally:

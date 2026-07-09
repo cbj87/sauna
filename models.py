@@ -123,6 +123,7 @@ class Booking(Base):
 
     member = relationship("FamilyMember", back_populates="bookings")
     participants = relationship("BookingParticipant", back_populates="booking", cascade="all, delete-orphan")
+    invites = relationship("BookingInvite", back_populates="booking", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict:
         return {
@@ -163,6 +164,44 @@ class BookingParticipant(Base):
             "member_name": self.member.name if self.member else None,
             "member_color": self.member.color if self.member else None,
             "joined_at": self.joined_at.isoformat() if self.joined_at else None,
+        }
+
+
+class BookingInvite(Base):
+    """An invitation for a member to join a booking.
+
+    Deliberately separate from BookingParticipant: participants confer control
+    rights, so a pending/declined invite must not create a participant row.
+    A "yes" RSVP additionally creates the BookingParticipant.
+    """
+    __tablename__ = "booking_invites"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False)
+    member_id = Column(Integer, ForeignKey("family_members.id", ondelete="CASCADE"), nullable=False)
+    invited_by = Column(Integer, ForeignKey("family_members.id", ondelete="SET NULL"), nullable=True)
+    # invited | yes | no | maybe
+    status = Column(String, default="invited")
+    invited_at = Column(DateTime, nullable=True)
+    responded_at = Column(DateTime, nullable=True)
+
+    booking = relationship("Booking", back_populates="invites")
+    member = relationship("FamilyMember", foreign_keys=[member_id])
+
+    __table_args__ = (
+        UniqueConstraint("booking_id", "member_id", name="uq_booking_invite_member"),
+    )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "booking_id": self.booking_id,
+            "member_id": self.member_id,
+            "member_name": self.member.name if self.member else None,
+            "member_color": self.member.color if self.member else None,
+            "status": self.status,
+            "invited_at": self.invited_at.isoformat() if self.invited_at else None,
+            "responded_at": self.responded_at.isoformat() if self.responded_at else None,
         }
 
 

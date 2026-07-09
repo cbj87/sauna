@@ -105,6 +105,8 @@ DEVICE_LOG_RETENTION_DAYS=365          # Telemetry retention for preheat estimat
 - `Booking.end_time < Booking.start_time` signals a midnight-spanning booking
 - `notification_prefs` stored as JSON text in FamilyMember
 - `ControlLog.notes` stores JSON-encoded extras (light, fan, steamEn)
+- `BookingParticipant` = joined members (confers control rights); `BookingInvite` (status invited|yes|no|maybe) is separate — a "yes" RSVP additionally creates the participant row; withdrawing a yes revokes it only while the booking is still `scheduled`
+- Notification pref keys: `session_ending`, `sauna_control`, `signup`, `booking`, `approval`, `invite` (you were invited), `rsvp` (responses to your session)
 
 ### Roles
 - **Admin**: full access — member approval, preset management, DB browser, control log
@@ -139,7 +141,7 @@ DEVICE_LOG_RETENTION_DAYS=365          # Telemetry retention for preheat estimat
 | Members | GET /api/members; PUT /api/members/<id>; POST /api/members/<id>/change-password |
 | Sauna | GET /api/sauna/status, /heat-estimate; POST /on, /off, /extend, /set, /preset/<name> |
 | Presets | GET /api/presets; PUT/DELETE /api/admin/presets/<name> |
-| Bookings | GET/POST /api/bookings; PUT/DELETE /api/bookings/<id>; POST /preheat |
+| Bookings | GET/POST /api/bookings; PUT/DELETE /api/bookings/<id>; POST /preheat, /join, /invites, /rsvp |
 | Push | GET vapid-key; POST subscribe/unsubscribe/test |
 | Admin utils | GET harvia-stats, control_log, db/<table>; PUT/DELETE db/<table>/<id> |
 
