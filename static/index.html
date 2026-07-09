@@ -1310,7 +1310,7 @@ function HelpModal({ onClose }) {
 }
 
 // ─── booking modal ────────────────────────────────────────────────────────────
-function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, onSave, editingBooking, bookingWindowDays = 7 }) {
+function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, onSave, editingBooking, bookingWindowDays = 7, currentMember }) {
   const now = new Date();
   const isEditing = !!editingBooking;
 
@@ -1340,7 +1340,9 @@ function BookingModal({ defaultTime, defaultDate, members, bookings, onClose, on
 
   const [confirming, setConfirming] = useState(false);
   const [inviteIds, setInviteIds] = useState([]);
-  const invitableMembers = members.filter(m => m.id !== Number(memberId));
+  // The server assigns the booking to the logged-in member, so exclude them
+  // (and the form's selected member) from the invite list.
+  const invitableMembers = members.filter(m => m.id !== Number(memberId) && m.id !== currentMember?.id);
   const invitedNames = invitableMembers.filter(m => inviteIds.includes(m.id)).map(m => m.name);
 
   function toggleInvite(id) {
@@ -4265,6 +4267,7 @@ function MainApp({ currentMember, onLogout, initialBookingId }) {
           onClose={()=>setShowBookModal(false)}
           onSave={handleCreateBooking}
           bookingWindowDays={bookingWindowDays}
+          currentMember={currentMember}
         />
       )}
       {selectedSlot && (
@@ -4290,6 +4293,7 @@ function MainApp({ currentMember, onLogout, initialBookingId }) {
           onClose={() => setEditingBooking(null)}
           onSave={data => handleEditBooking(editingBooking.id, data)}
           bookingWindowDays={bookingWindowDays}
+          currentMember={currentMember}
         />
       )}
 

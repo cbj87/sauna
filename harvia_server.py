@@ -4019,6 +4019,14 @@ def serve_spa(path):
     return send_from_directory(app.static_folder, "index.html")
 
 
+@app.route("/rsvp/<token>")
+def serve_rsvp_page(token):
+    # Explicit rule: Flask's built-in static route (/<path:filename>, from
+    # static_url_path="") outranks the catch-all for unknown paths and 404s,
+    # so the public RSVP page needs its own non-path-converter route.
+    return send_from_directory(app.static_folder, "index.html")
+
+
 @app.route("/.well-known/apple-app-site-association")
 def apple_app_site_association():
     """Universal Links manifest — lets share links (/rsvp/*) open the iOS app.
