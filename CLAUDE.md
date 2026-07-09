@@ -52,7 +52,7 @@ For UI-only development without Harvia credentials, the sauna status endpoints w
 
 ```
 APP_SECRET_KEY=<32+ random chars>      # Required; refuses to start with default
-APP_TIMEZONE=Australia/Sydney          # IANA tz; all scheduler/booking logic uses this
+APP_TIMEZONE=America/Denver            # IANA tz; all scheduler/booking logic uses this
 HARVIA_USERNAME=<myharvia-email>
 HARVIA_PASSWORD=<myharvia-password>
 HARVIA_DEVICE_ID=<uuid>
