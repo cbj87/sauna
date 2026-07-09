@@ -137,7 +137,7 @@ DEVICE_LOG_RETENTION_DAYS=365          # Telemetry retention for preheat estimat
 | Auth | POST /api/auth/signup, /login, /logout, /migrate, /forgot-password, /reset-password; GET /api/auth/me |
 | Admin members | GET/POST /api/admin/members; POST approve/reject; PUT/DELETE /api/admin/members/<id>; PUT /api/admin/members/<id>/set-credentials |
 | Members | GET /api/members; PUT /api/members/<id>; POST /api/members/<id>/change-password |
-| Sauna | GET /api/sauna/status; POST /on, /off, /extend, /set, /preset/<name> |
+| Sauna | GET /api/sauna/status, /heat-estimate; POST /on, /off, /extend, /set, /preset/<name> |
 | Presets | GET /api/presets; PUT/DELETE /api/admin/presets/<name> |
 | Bookings | GET/POST /api/bookings; PUT/DELETE /api/bookings/<id>; POST /preheat |
 | Push | GET vapid-key; POST subscribe/unsubscribe/test |

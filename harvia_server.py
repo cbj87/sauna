@@ -1996,6 +1996,155 @@ def sauna_status():
         return err(str(exc), 502)
 
 
+# Heating-rate model (deliberately simple): median °C/min across recent heating
+# segments from the DeviceStateLog timeseries, bucketed by outdoor temperature.
+_HEAT_RATE_CACHE_TTL = 600.0
+_heat_rate_lock = threading.Lock()
+_heat_rate_cache: dict = {"ts": 0.0, "buckets": {}, "fallback": None}
+
+# Segment extraction thresholds
+_SEGMENT_GAP_SECONDS = 180       # rows further apart than this start a new segment
+_SEGMENT_MIN_MINUTES = 5.0
+_SEGMENT_MIN_DELTA_C = 5.0
+_NEAR_TARGET_MARGIN_C = 3        # drop the asymptotic tail near target
+_ESTIMATE_SAFETY_FACTOR = 1.1
+
+
+def _outdoor_bucket(outdoor: float | None) -> str | None:
+    if outdoor is None:
+        return None
+    if outdoor < 5:
+        return "cold"
+    if outdoor <= 15:
+        return "mild"
+    return "warm"
+
+
+def _median(values: list[float]) -> float:
+    values = sorted(values)
+    n = len(values)
+    mid = n // 2
+    return values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2
+
+
+def _compute_heating_rate(db, outdoor_temp: float | None) -> dict | None:
+    """Median heating rate (°C/min) from the last 30 days of telemetry.
+
+    Prefers segments from the caller's outdoor-temp bucket when it has enough
+    samples; falls back to the all-data median. None when there isn't enough
+    history yet.
+    """
+    now = _time.time()
+    with _heat_rate_lock:
+        if now - _heat_rate_cache["ts"] > _HEAT_RATE_CACHE_TTL:
+            rows = (
+                db.query(DeviceStateLog)
+                .filter(DeviceStateLog.ts >= app_now() - timedelta(days=30))
+                .order_by(DeviceStateLog.ts)
+                .all()
+            )
+            # Split into heating segments: a gap or an inactive row ends the segment.
+            segments: list[list[DeviceStateLog]] = []
+            current: list[DeviceStateLog] = []
+            prev_ts = None
+            for r in rows:
+                gap = (r.ts - prev_ts).total_seconds() if prev_ts else 0
+                prev_ts = r.ts
+                if not r.active or gap > _SEGMENT_GAP_SECONDS:
+                    if current:
+                        segments.append(current)
+                        current = []
+                    continue
+                current.append(r)
+            if current:
+                segments.append(current)
+
+            rates: list[tuple[float, str | None]] = []  # (°C/min, outdoor bucket)
+            for seg in segments:
+                # Keep the rise portion below the asymptotic zone near target.
+                pts = [
+                    p for p in seg
+                    if p.temperature is not None and p.target_temp is not None
+                    and p.temperature < p.target_temp - _NEAR_TARGET_MARGIN_C
+                ]
+                if len(pts) < 2:
+                    continue
+                first, last = pts[0], pts[-1]
+                minutes = (last.ts - first.ts).total_seconds() / 60
+                delta = last.temperature - first.temperature
+                if minutes < _SEGMENT_MIN_MINUTES or delta < _SEGMENT_MIN_DELTA_C:
+                    continue
+                outdoors = [p.outdoor_temp for p in pts if p.outdoor_temp is not None]
+                bucket = _outdoor_bucket(sum(outdoors) / len(outdoors) if outdoors else None)
+                rates.append((delta / minutes, bucket))
+
+            buckets: dict[str, list[float]] = {}
+            for rate, bucket in rates:
+                if bucket:
+                    buckets.setdefault(bucket, []).append(rate)
+            _heat_rate_cache["buckets"] = {
+                b: {"rate": _median(v), "samples": len(v)} for b, v in buckets.items()
+            }
+            _heat_rate_cache["fallback"] = (
+                {"rate": _median([r for r, _ in rates]), "samples": len(rates)}
+                if len(rates) >= 3 else None
+            )
+            _heat_rate_cache["ts"] = now
+
+        wanted = _outdoor_bucket(outdoor_temp)
+        bucketed = _heat_rate_cache["buckets"].get(wanted) if wanted else None
+        if bucketed and bucketed["samples"] >= 3:
+            return {"rate_c_per_min": bucketed["rate"], "samples": bucketed["samples"], "bucket": wanted}
+        fallback = _heat_rate_cache["fallback"]
+        if fallback:
+            return {"rate_c_per_min": fallback["rate"], "samples": fallback["samples"], "bucket": None}
+        return None
+
+
+@app.route("/api/sauna/heat-estimate")
+def sauna_heat_estimate():
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        target = request.args.get("target", type=int)
+        target_f = request.args.get("target_f", type=int)
+        if target is None and target_f is not None:
+            target = f_to_c(target_f)
+        if target is None:
+            return err("target (°C) or target_f required")
+
+        current_temp = None
+        status, _age = _get_cached_status()
+        if status is None and harvia:
+            try:
+                status = harvia.get_full_status()
+                _store_status_cache(status)
+            except Exception as exc:
+                logger.warning("heat-estimate: status fetch failed: %s", exc)
+        if status is not None:
+            current_temp = status.get("temperature")
+
+        outdoor = _get_outdoor_temp()
+        rate_info = _compute_heating_rate(db, outdoor)
+
+        minutes = None
+        if rate_info and current_temp is not None:
+            remaining_c = max(0, target - current_temp)
+            minutes = round(remaining_c / rate_info["rate_c_per_min"] * _ESTIMATE_SAFETY_FACTOR)
+
+        return jsonify({
+            "minutes_to_target": minutes,
+            "rate_c_per_min": round(rate_info["rate_c_per_min"], 2) if rate_info else None,
+            "current_temp": current_temp,
+            "target_temp": target,
+            "outdoor_temp": outdoor,
+            "samples": rate_info["samples"] if rate_info else 0,
+        })
+    finally:
+        db.close()
+
+
 def _complete_running_bookings() -> None:
     """Mark today's running tracking bookings completed when the sauna is turned off.
 

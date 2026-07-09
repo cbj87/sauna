@@ -702,6 +702,17 @@ function HomePanel({
     }
   }, [myProfile?.default_temp, myProfile?.default_time]);
 
+  // Time-to-target estimate while the heater is running (from logged heating rates)
+  const [heatEst, setHeatEst] = useState(null);
+  const heatingToTarget = saunaOn && !!status?.heatOn && status?.targetTemp != null
+    && status?.temperature != null && status.temperature < status.targetTemp;
+  useEffect(() => {
+    if (!heatingToTarget) { setHeatEst(null); return; }
+    api(`/api/sauna/heat-estimate?target=${status.targetTemp}`)
+      .then(d => setHeatEst(d && d.minutes_to_target != null ? d : null))
+      .catch(() => setHeatEst(null));
+  }, [heatingToTarget, status?.temperature, status?.targetTemp]);
+
   const nativePayload = () => ({
     bookingId: activeBooking?.id ?? null,
     memberId: activeBooking?.member_id ?? currentMember?.id ?? null,
@@ -794,6 +805,9 @@ function HomePanel({
             <div className="mt-2 text-6xl font-black leading-none tracking-tight">
               {fmtF(currentTempF)}
             </div>
+            {heatingToTarget && heatEst && (
+              <p className="mt-1 text-sm font-bold text-orange-300">~{heatEst.minutes_to_target} min to {fmtF(targetTempF)}</p>
+            )}
             <p className="mt-2 text-sm text-gray-400">{updatedLabel} · tap refresh for live status</p>
           </div>
           <button onClick={onRefresh} disabled={busy}
@@ -1478,6 +1492,15 @@ function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit, onJoin, curr
   const [confirmCancel, setConfirmCancel] = useState(false);
   const canEdit = booking.status === 'scheduled' && isOwner;
   const color = booking.member_color || '#f97316';
+  const [heatEst, setHeatEst] = useState(null);
+
+  useEffect(() => {
+    if ((canPreheat || booking.status === 'preheating') && booking.target_temp) {
+      api(`/api/sauna/heat-estimate?target=${booking.target_temp}`)
+        .then(d => { if (d && d.minutes_to_target != null) setHeatEst(d); })
+        .catch(() => {});
+    }
+  }, []);
 
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-end sm:items-center justify-center p-4" onClick={onClose}>
@@ -1492,6 +1515,9 @@ function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit, onJoin, curr
           <div>Duration: {booking.on_time} min</div>
           <div className="capitalize">Status: <span className="font-semibold text-white">{booking.status}</span></div>
           {booking.participant_count > 1 && <div>{booking.participant_count} people joined</div>}
+          {booking.status === 'preheating' && heatEst && (
+            <div className="text-orange-300">🔥 ~{heatEst.minutes_to_target} min to {cToF(booking.target_temp)}°F</div>
+          )}
         </div>
         <div className="flex flex-col gap-3">
           {canJoin && (
@@ -1501,10 +1527,17 @@ function SlotModal({ booking, onClose, onCancel, onPreheat, onEdit, onJoin, curr
             </button>
           )}
           {canPreheat && (
-            <button onClick={()=>onPreheat(booking.id)}
-              className="w-full bg-orange-500 hover:bg-orange-400 text-white py-3 rounded-xl font-bold text-base">
-              🔥 Start Preheat
-            </button>
+            <div>
+              <button onClick={()=>onPreheat(booking.id)}
+                className="w-full bg-orange-500 hover:bg-orange-400 text-white py-3 rounded-xl font-bold text-base">
+                🔥 Start Preheat
+              </button>
+              {heatEst && (
+                <div className="mt-1.5 text-center text-xs font-semibold text-gray-400">
+                  Ready in ~{heatEst.minutes_to_target} min at {cToF(booking.target_temp)}°F
+                </div>
+              )}
+            </div>
           )}
           {canEdit && (
             <button onClick={()=>onEdit(booking)}
