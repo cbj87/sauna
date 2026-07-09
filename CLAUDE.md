@@ -87,7 +87,7 @@ DEVICE_LOG_RETENTION_DAYS=365          # Telemetry retention for preheat estimat
 - DB migrations: `_migrate_db()` runs safe `ALTER TABLE` statements on startup
 - Email: `_send_email(to, subject, body)` uses Resend HTTP API (stdlib `urllib` only, no SMTP); fires in background thread so it never blocks responses
 - Password validation: `_validate_password(pw)` — min 8 chars
-- CSRF exempt endpoints: `login`, `signup`, `migrate`, `forgot_password`, `reset_password`, `static`
+- CSRF exempt endpoints: `login`, `signup`, `migrate`, `forgot_password`, `reset_password`, `static`, `rsvp_public_respond` (authorised by the unguessable share token in its path)
 
 ### Frontend
 - Single `index.html` — all React components inline, no build process
@@ -97,8 +97,9 @@ DEVICE_LOG_RETENTION_DAYS=365          # Telemetry retention for preheat estimat
 - Dates: stored as YYYY-MM-DD strings; times as HH:MM strings
 - Toast notifications: `showToast(msg, type)` — stacked, auto-dismiss after 3.5s
 - `localDate()` — gets today's date in user's local timezone
-- Auth states: `loading | login | signup | pending | main | migrate | forgot | reset`
+- Auth states: `loading | login | signup | pending | main | migrate | forgot | reset | rsvp`
 - Password reset: `?reset_token=` URL param on load → goes directly to `reset` state; token cleared from URL after use via `history.replaceState`
+- Public share links: `/rsvp/<token>` renders `GuestRsvpScreen` pre-auth (no account needed); `?booking=<id>` deep-links to a booking's SlotModal; `?signup=1` opens the signup screen; guest `guest_secret` persisted in localStorage per token so guests can change their answer
 
 ### Database
 - Temperature always in °C
@@ -141,7 +142,8 @@ DEVICE_LOG_RETENTION_DAYS=365          # Telemetry retention for preheat estimat
 | Members | GET /api/members; PUT /api/members/<id>; POST /api/members/<id>/change-password |
 | Sauna | GET /api/sauna/status, /heat-estimate; POST /on, /off, /extend, /set, /preset/<name> |
 | Presets | GET /api/presets; PUT/DELETE /api/admin/presets/<name> |
-| Bookings | GET/POST /api/bookings; PUT/DELETE /api/bookings/<id>; POST /preheat, /join, /invites, /rsvp |
+| Bookings | GET/POST /api/bookings; PUT/DELETE /api/bookings/<id>; POST /preheat, /join, /invites, /rsvp, /share |
+| Public RSVP | GET/POST /api/rsvp/<token> — no auth; token = `Booking.share_token`; signed-in members are routed to the member RSVP flow |
 | Push | GET vapid-key; POST subscribe/unsubscribe/test |
 | Admin utils | GET harvia-stats, control_log, db/<table>; PUT/DELETE db/<table>/<id> |
 

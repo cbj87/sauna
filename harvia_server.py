@@ -33,6 +33,7 @@ from models import (
     ControlLog,
     DeviceStateLog,
     FamilyMember,
+    GuestRsvp,
     LiveActivityPushToStartToken,
     LiveActivityToken,
     NativeDevice,
@@ -1068,7 +1069,8 @@ def _generate_csrf_token() -> str:
 
 
 # Endpoints that don't require a CSRF token (pre-authentication flows).
-_CSRF_EXEMPT = {"login", "signup", "migrate", "forgot_password", "reset_password", "static"}
+# rsvp_public_respond is authorised by the unguessable share token in its path
+_CSRF_EXEMPT = {"login", "signup", "migrate", "forgot_password", "reset_password", "static", "rsvp_public_respond"}
 
 
 @app.before_request
@@ -3577,6 +3579,227 @@ def invite_to_booking(booking_id: int):
         db.close()
 
 
+def _apply_member_rsvp(db, booking: Booking, member: FamilyMember, response: str) -> None:
+    """Record a member's RSVP: upsert the invite row, sync participant status,
+    and notify the host. Caller has already validated booking/response."""
+    # Any approved member may RSVP — an uninvited RSVP (e.g. via a share
+    # link) creates its own invite row so the host sees it.
+    invite = db.query(BookingInvite).filter_by(booking_id=booking.id, member_id=member.id).first()
+    if not invite:
+        invite = BookingInvite(
+            booking_id=booking.id,
+            member_id=member.id,
+            invited_by=None,
+            invited_at=app_now(),
+        )
+        db.add(invite)
+    prev_status = invite.status
+    invite.status = response
+    invite.responded_at = app_now()
+    db.commit()
+
+    if response == "yes":
+        _add_participant(db, booking, member.id)
+    elif prev_status == "yes" and booking.status == "scheduled":
+        # Withdrawing a yes revokes control — but only before the session
+        # starts, so nobody loses extend/off rights mid-session.
+        participant = (
+            db.query(BookingParticipant)
+            .filter_by(booking_id=booking.id, member_id=member.id)
+            .first()
+        )
+        if participant:
+            db.delete(participant)
+            db.commit()
+    db.refresh(booking)
+
+    label = {"yes": "Yes 🎉", "no": "No", "maybe": "Maybe"}[response]
+    _notify_member(booking.member_id, {
+        "title": "📅 RSVP",
+        "body": f"{member.name} responded {label} — {_booking_when_text(booking)}",
+        "tag": f"rsvp-{booking.id}-{member.id}",
+        "thread_id": "booking-rsvp",
+        "url": f"/?booking={booking.id}",
+        "bookingId": booking.id,
+    }, pref_key="rsvp")
+
+
+# ---------------------------------------------------------------------------
+# Public share links & guest RSVP
+# ---------------------------------------------------------------------------
+
+GUEST_RSVP_MAX_PER_WINDOW = 20      # per-IP posts per window
+GUEST_RSVP_WINDOW_SECONDS = 900
+GUEST_RSVP_MAX_GUESTS = 20          # per booking
+GUEST_NAME_MAX_LEN = 40
+
+_guest_rsvp_lock = threading.Lock()
+_guest_rsvp_attempts: dict[str, list[float]] = collections.defaultdict(list)
+
+
+def _guest_rsvp_rate_limited(ip: str) -> bool:
+    now = _time.time()
+    with _guest_rsvp_lock:
+        attempts = _guest_rsvp_attempts[ip]
+        _guest_rsvp_attempts[ip] = [t for t in attempts if now - t < GUEST_RSVP_WINDOW_SECONDS]
+        if len(_guest_rsvp_attempts[ip]) >= GUEST_RSVP_MAX_PER_WINDOW:
+            return True
+        _guest_rsvp_attempts[ip].append(now)
+        return False
+
+
+def _booking_is_past(booking: Booking) -> bool:
+    now = app_now()
+    end_date = booking.date
+    if booking.end_time < booking.start_time:  # midnight-spanning
+        end_date = booking.date + timedelta(days=1)
+    return datetime.combine(end_date, booking.end_time) < now
+
+
+@app.route("/api/bookings/<int:booking_id>/share", methods=["POST"])
+def share_booking(booking_id: int):
+    db, member, error = require_auth()
+    if error:
+        return error
+    try:
+        booking = db.query(Booking).filter_by(id=booking_id).first()
+        if not booking:
+            return err("Booking not found", 404)
+        if not _can_control_booking(db, booking, member):
+            return err("Join this session before sharing it", 403)
+        if booking.status in ("cancelled", "completed"):
+            return err(f"Cannot share a {booking.status} session")
+
+        if not booking.share_token:
+            booking.share_token = secrets.token_urlsafe(16)
+            db.commit()
+        return jsonify({
+            "ok": True,
+            "token": booking.share_token,
+            "url": f"{APP_URL}/rsvp/{booking.share_token}",
+        })
+    finally:
+        db.close()
+
+
+def _public_rsvp_payload(db, booking: Booking, viewer: FamilyMember | None) -> dict:
+    """Booking details safe to show anyone holding the share link."""
+    guests = db.query(GuestRsvp).filter_by(booking_id=booking.id).order_by(GuestRsvp.created_at).all()
+    participants = [p.member.name for p in (booking.participants or []) if p.member is not None]
+    going_count = 1 + len(participants) + sum(1 for g in guests if g.status == "yes")
+    data = {
+        "booking_id": booking.id,
+        "date": booking.date.isoformat(),
+        "start_time": booking.start_time.strftime("%H:%M"),
+        "end_time": booking.end_time.strftime("%H:%M"),
+        "status": booking.status,
+        "is_past": _booking_is_past(booking),
+        "host_name": booking.member.name if booking.member else None,
+        "host_color": booking.member.color if booking.member else None,
+        "participants": participants,
+        "guests": [g.to_dict() for g in guests],
+        "going_count": going_count,
+        "viewer": None,
+    }
+    if viewer is not None:
+        data["viewer"] = {
+            "id": viewer.id,
+            "name": viewer.name,
+            "is_host": viewer.id == booking.member_id,
+            "my_invite_status": next(
+                (i.status for i in (booking.invites or []) if i.member_id == viewer.id), None
+            ),
+        }
+    return data
+
+
+@app.route("/api/rsvp/<token>")
+def rsvp_public_view(token: str):
+    db = SessionLocal()
+    try:
+        booking = db.query(Booking).filter_by(share_token=token).first()
+        if not booking:
+            return err("Invite not found", 404)
+        # Past/cancelled sessions still resolve so the page can say so
+        return jsonify(_public_rsvp_payload(db, booking, current_member(db)))
+    finally:
+        db.close()
+
+
+@app.route("/api/rsvp/<token>", methods=["POST"])
+def rsvp_public_respond(token: str):
+    # CSRF-exempt: the unguessable share token in the path is the authorisation.
+    if _guest_rsvp_rate_limited(_get_client_ip()):
+        return err("Too many RSVPs from this address — try again later", 429)
+
+    db = SessionLocal()
+    try:
+        booking = db.query(Booking).filter_by(share_token=token).first()
+        if not booking:
+            return err("Invite not found", 404)
+        if booking.status == "cancelled":
+            return err("This session was cancelled")
+        if booking.status == "completed" or _booking_is_past(booking):
+            return err("This session has already happened")
+
+        body = request.get_json(silent=True) or {}
+        response = (body.get("response") or "").strip().lower()
+        if response not in ("yes", "no", "maybe"):
+            return err("response must be yes, no or maybe")
+
+        # Signed-in members get the member flow — no ghost guest rows.
+        member = current_member(db)
+        if member is not None:
+            if booking.member_id == member.id:
+                return err("You're the host of this session")
+            _apply_member_rsvp(db, booking, member, response)
+            return jsonify({"ok": True, **_public_rsvp_payload(db, booking, member)})
+
+        name = (body.get("name") or "").strip()[:GUEST_NAME_MAX_LEN]
+        if not name:
+            return err("Name is required")
+
+        guest = None
+        guest_secret = (body.get("guest_secret") or "").strip()
+        if guest_secret:
+            guest = db.query(GuestRsvp).filter_by(booking_id=booking.id, guest_secret=guest_secret).first()
+        if guest is None:
+            guest_count = db.query(GuestRsvp).filter_by(booking_id=booking.id).count()
+            if guest_count >= GUEST_RSVP_MAX_GUESTS:
+                return err("This session has too many guest RSVPs already")
+            guest = GuestRsvp(
+                booking_id=booking.id,
+                name=name,
+                status=response,
+                guest_secret=secrets.token_urlsafe(16),
+            )
+            db.add(guest)
+        else:
+            guest.name = name
+            guest.status = response
+            guest.updated_at = app_now()
+        db.commit()
+
+        label = {"yes": "Yes 🎉", "no": "No", "maybe": "Maybe"}[response]
+        _notify_member(booking.member_id, {
+            "title": "🎟 Guest RSVP",
+            "body": f"{name} responded {label} — {_booking_when_text(booking)}",
+            "tag": f"guest-rsvp-{booking.id}-{guest.id}",
+            "thread_id": "booking-rsvp",
+            "url": f"/?booking={booking.id}",
+            "bookingId": booking.id,
+        }, pref_key="rsvp")
+
+        return jsonify({
+            "ok": True,
+            "guest_secret": guest.guest_secret,
+            "status": guest.status,
+            **_public_rsvp_payload(db, booking, None),
+        })
+    finally:
+        db.close()
+
+
 @app.route("/api/bookings/<int:booking_id>/rsvp", methods=["POST"])
 def rsvp_booking(booking_id: int):
     db, member, error = require_auth()
@@ -3596,47 +3819,7 @@ def rsvp_booking(booking_id: int):
         if response not in ("yes", "no", "maybe"):
             return err("response must be yes, no or maybe")
 
-        # Any approved member may RSVP — an uninvited RSVP (e.g. via a share
-        # link) creates its own invite row so the host sees it.
-        invite = db.query(BookingInvite).filter_by(booking_id=booking.id, member_id=member.id).first()
-        if not invite:
-            invite = BookingInvite(
-                booking_id=booking.id,
-                member_id=member.id,
-                invited_by=None,
-                invited_at=app_now(),
-            )
-            db.add(invite)
-        prev_status = invite.status
-        invite.status = response
-        invite.responded_at = app_now()
-        db.commit()
-
-        if response == "yes":
-            _add_participant(db, booking, member.id)
-        elif prev_status == "yes" and booking.status == "scheduled":
-            # Withdrawing a yes revokes control — but only before the session
-            # starts, so nobody loses extend/off rights mid-session.
-            participant = (
-                db.query(BookingParticipant)
-                .filter_by(booking_id=booking.id, member_id=member.id)
-                .first()
-            )
-            if participant:
-                db.delete(participant)
-                db.commit()
-        db.refresh(booking)
-
-        label = {"yes": "Yes 🎉", "no": "No", "maybe": "Maybe"}[response]
-        _notify_member(booking.member_id, {
-            "title": "📅 RSVP",
-            "body": f"{member.name} responded {label} — {_booking_when_text(booking)}",
-            "tag": f"rsvp-{booking.id}-{member.id}",
-            "thread_id": "booking-rsvp",
-            "url": f"/?booking={booking.id}",
-            "bookingId": booking.id,
-        }, pref_key="rsvp")
-
+        _apply_member_rsvp(db, booking, member, response)
         return jsonify({"ok": True, "booking": _booking_to_dict_for(booking, member)})
     finally:
         db.close()

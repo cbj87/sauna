@@ -119,6 +119,7 @@ class Booking(Base):
     # scheduled | preheating | active | completed | cancelled
     status = Column(String, default="scheduled")
     session_ending_notified_at = Column(DateTime, nullable=True)
+    share_token = Column(String, nullable=True)  # public RSVP link token (unique when set)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     member = relationship("FamilyMember", back_populates="bookings")
@@ -314,6 +315,27 @@ class ControlLog(Base):
         }
 
 
+class GuestRsvp(Base):
+    """A non-member RSVP made through a booking's public share link."""
+    __tablename__ = "guest_rsvps"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    booking_id = Column(Integer, ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String, nullable=False)
+    # yes | no | maybe
+    status = Column(String, nullable=False)
+    # Per-guest secret so a guest can change their answer without an account
+    guest_secret = Column(String, unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "status": self.status,
+        }
+
+
 class DeviceStateLog(Base):
     """Per-minute device telemetry while the heater is running — feeds preheat estimates."""
     __tablename__ = "device_state_log"
@@ -353,6 +375,7 @@ def _migrate_db():
         "ALTER TABLE family_members ADD COLUMN reset_token_expires DATETIME",
         "ALTER TABLE family_members ADD COLUMN live_activity_all_sessions INTEGER DEFAULT 0",
         "ALTER TABLE native_devices ADD COLUMN apns_environment TEXT DEFAULT 'production'",
+        "ALTER TABLE bookings ADD COLUMN share_token TEXT",
     ]
     with engine.connect() as conn:
         for stmt in migrations:
@@ -361,14 +384,16 @@ def _migrate_db():
                 conn.commit()
             except Exception:
                 pass  # Column/change already applied — safe to ignore
-        # Partial unique index — enforces uniqueness only on non-NULL emails (SQLite compatible)
-        try:
-            conn.execute(text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS ix_fm_email ON family_members (email) WHERE email IS NOT NULL"
-            ))
-            conn.commit()
-        except Exception:
-            pass
+        # Partial unique indexes — enforce uniqueness only on non-NULL values (SQLite compatible)
+        for index_stmt in (
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_fm_email ON family_members (email) WHERE email IS NOT NULL",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_booking_share_token ON bookings (share_token) WHERE share_token IS NOT NULL",
+        ):
+            try:
+                conn.execute(text(index_stmt))
+                conn.commit()
+            except Exception:
+                pass
 
 
 def init_db():
