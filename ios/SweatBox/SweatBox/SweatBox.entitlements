@@ -4,5 +4,10 @@
 <dict>
 	<key>aps-environment</key>
 	<string>development</string>
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:sweatbox.cbj87.dev</string>
+		<string>applinks:sweatbox-test.cbj87.dev</string>
+	</array>
 </dict>
 </plist>

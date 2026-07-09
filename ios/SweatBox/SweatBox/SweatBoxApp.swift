@@ -5,6 +5,7 @@
 //  Created by Cameron Jones on 6/29/26.
 //
 
+import Combine
 import SwiftUI
 import UIKit
 import UserNotifications
@@ -69,6 +70,48 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound, .list])
+    }
+
+    // Tapping a notification deep-links into the web app. The server attaches a
+    // `url` ride-along (e.g. "/?booking=12") to every alert payload.
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        if let urlString = response.notification.request.content.userInfo["url"] as? String,
+           let resolved = URL(string: urlString, relativeTo: AppConfig.webAppURL)?.absoluteURL,
+           resolved.host == AppConfig.webAppHost {
+            DeepLinkBroker.shared.open(resolved)
+        }
+        completionHandler()
+    }
+}
+
+/// Shared holder for a pending in-app navigation target. Universal Links,
+/// the sweatbox:// scheme, and notification taps all funnel through here;
+/// ContentView observes it and tells the WebView to load the URL.
+final class DeepLinkBroker: ObservableObject {
+    static let shared = DeepLinkBroker()
+
+    @Published var pendingURL: URL?
+
+    private init() {}
+
+    func open(_ url: URL) {
+        DispatchQueue.main.async {
+            self.pendingURL = url
+        }
+    }
+
+    /// Map a sweatbox:// URL onto the web app, e.g. sweatbox://rsvp/abc → https://…/rsvp/abc
+    static func webURL(fromCustomScheme url: URL) -> URL? {
+        guard url.scheme == AppConfig.urlScheme else { return nil }
+        guard var comps = URLComponents(url: AppConfig.webAppURL, resolvingAgainstBaseURL: false) else { return nil }
+        let hostSegment = url.host.map { "/\($0)" } ?? ""
+        comps.path = hostSegment + url.path
+        comps.query = url.query
+        return comps.url
     }
 }
 

@@ -6,6 +6,7 @@ struct WebViewContainer: UIViewRepresentable {
     let url: URL
     let allowedHost: String
     let bridge: WebBridge
+    var deepLinkURL: URL? = nil
     var onExternalURL: (URL) -> Void
     var onLoadFinished: () -> Void = {}
 
@@ -45,13 +46,21 @@ struct WebViewContainer: UIViewRepresentable {
         return webView
     }
 
-    func updateUIView(_ webView: WKWebView, context: Context) {}
+    func updateUIView(_ webView: WKWebView, context: Context) {
+        // Deep link arrived (Universal Link, sweatbox:// scheme, or a
+        // notification tap) — navigate the already-loaded web app to it.
+        if let target = deepLinkURL, context.coordinator.lastDeepLinkURL != target {
+            context.coordinator.lastDeepLinkURL = target
+            webView.load(URLRequest(url: target))
+        }
+    }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         let allowedHost: String
         weak var bridge: WebBridge?
         let onExternalURL: (URL) -> Void
         let onLoadFinished: () -> Void
+        var lastDeepLinkURL: URL?
         private var hasFinishedFirstLoad = false
 
         init(

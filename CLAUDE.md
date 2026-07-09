@@ -64,6 +64,7 @@ APNS_TEAM_ID=<10-char team id>
 APNS_PRIVATE_KEY=<-----BEGIN PRIVATE KEY----- …>
 APNS_BUNDLE_ID=dev.cbj87.SweatBox
 APNS_USE_SANDBOX=1                     # Legacy fallback for device rows without apns_environment
+APPLE_TEAM_ID=<10-char team id>        # For Universal Links AASA; defaults to APNS_TEAM_ID
 DB_PATH=/data/sweatbox.db              # Railway volume path; defaults to ./sweatbox.db
 PORT=5000
 RESEND_API_KEY=<resend-api-key>        # Required for password reset emails
@@ -122,6 +123,7 @@ DEVICE_LOG_RETENTION_DAYS=365          # Telemetry retention for preheat estimat
 - Stale APNs tokens are only cleared on 410 `Unregistered` or 400 with a token-specific reason (`BadDeviceToken` / `DeviceTokenNotForTopic` / `ExpiredProviderToken`) — payload/server bugs (400 `MissingTopic`, etc.) do NOT nuke the token.
 - Time-sensitive alerts (`interruption_level="time-sensitive"`) break through Focus modes — used for the auto-shutoff failsafe and session-ending reminders.
 - On sign-out, `/api/auth/logout` accepts a `nativeDeviceId` and deletes the `NativeDevice` row (cascades to Live Activity tokens) so the previous member's pushes stop hitting the phone.
+- **Deep links**: alert payloads carry a `url` ride-along (e.g. `/?booking=12`). The iOS app opens it on notification tap (`AppDelegate.didReceive` → `DeepLinkBroker` → WebView load); Web Push taps use `sw.js`'s existing `data.url` handling. Universal Links: `/.well-known/apple-app-site-association` claims `/rsvp/*` (appID from `APPLE_TEAM_ID`, defaults to `APNS_TEAM_ID`); the app has the Associated Domains entitlement for `sweatbox.cbj87.dev` + `sweatbox-test.cbj87.dev`. Apple's CDN caches AASA up to ~24h; must be served over HTTPS with no redirect (check Cloudflare proxy rules).
 
 ### Background Jobs (APScheduler, every 60s)
 1. `check_and_auto_shutoff()` — advance booking states, turn off sauna when session ends; sends CRITICAL alert if shut-off fails

@@ -80,6 +80,9 @@ APNS_TEAM_ID = os.environ.get("APNS_TEAM_ID", "")
 APNS_PRIVATE_KEY = os.environ.get("APNS_PRIVATE_KEY", "")
 APNS_BUNDLE_ID = os.environ.get("APNS_BUNDLE_ID", "dev.cbj87.SweatBox")
 APNS_USE_SANDBOX = os.environ.get("APNS_USE_SANDBOX", "1").lower() not in ("0", "false", "no")
+# Apple Team ID for the Universal Links AASA file — same team as the APNs key,
+# so it defaults to APNS_TEAM_ID; override only if they ever differ.
+APPLE_TEAM_ID = os.environ.get("APPLE_TEAM_ID", APNS_TEAM_ID)
 
 APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Australia/Sydney")
 
@@ -4014,6 +4017,29 @@ def serve_spa(path):
     if path and os.path.exists(os.path.join(app.static_folder, path)):
         return send_from_directory(app.static_folder, path)
     return send_from_directory(app.static_folder, "index.html")
+
+
+@app.route("/.well-known/apple-app-site-association")
+def apple_app_site_association():
+    """Universal Links manifest — lets share links (/rsvp/*) open the iOS app.
+
+    Apple's CDN fetches this at app install; it must be HTTPS with no
+    redirects and Content-Type application/json (jsonify handles that).
+    Only /rsvp/* is claimed so normal web links stay in the browser.
+    """
+    if not APPLE_TEAM_ID:
+        return err("Universal Links not configured", 404)
+    return jsonify({
+        "applinks": {
+            "apps": [],
+            "details": [
+                {
+                    "appID": f"{APPLE_TEAM_ID}.{APNS_BUNDLE_ID}",
+                    "paths": ["/rsvp/*"],
+                }
+            ],
+        }
+    })
 
 
 # ---------------------------------------------------------------------------
