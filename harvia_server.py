@@ -29,6 +29,7 @@ from models import (
     Booking,
     BookingParticipant,
     ControlLog,
+    DeviceStateLog,
     FamilyMember,
     LiveActivityPushToStartToken,
     LiveActivityToken,
@@ -82,6 +83,11 @@ APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Australia/Sydney")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM     = os.environ.get("EMAIL_FROM", "onboarding@resend.dev")
 APP_URL        = os.environ.get("APP_URL", "http://localhost:5000")
+
+# Sauna location for Open-Meteo outdoor temperature (preheat telemetry). Unset = skip fetch.
+WEATHER_LAT = os.environ.get("WEATHER_LAT", "")
+WEATHER_LON = os.environ.get("WEATHER_LON", "")
+DEVICE_LOG_RETENTION_DAYS = int(os.environ.get("DEVICE_LOG_RETENTION_DAYS", "365"))
 
 def app_now() -> datetime:
     """Current local time as a naive datetime in the configured APP_TIMEZONE."""
@@ -1250,6 +1256,64 @@ def _get_cached_status(max_age: float = 90.0) -> tuple[dict | None, float]:
     return None, age
 
 
+# Outdoor temperature cache (Open-Meteo, keyless).  Refreshed at most every
+# 15 min; failures return the stale value (or None) so the device tick never
+# blocks or raises on weather problems.
+_outdoor_temp_lock = threading.Lock()
+_outdoor_temp_cache: dict = {"temp": None, "ts": 0.0}
+_OUTDOOR_TEMP_TTL = 900.0
+
+
+def _get_outdoor_temp() -> float | None:
+    if not WEATHER_LAT or not WEATHER_LON:
+        return None
+    with _outdoor_temp_lock:
+        if _time.time() - _outdoor_temp_cache["ts"] < _OUTDOOR_TEMP_TTL:
+            return _outdoor_temp_cache["temp"]
+    try:
+        import requests
+        resp = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": WEATHER_LAT,
+                "longitude": WEATHER_LON,
+                "current": "temperature_2m",
+            },
+            timeout=5,
+        )
+        resp.raise_for_status()
+        temp = resp.json()["current"]["temperature_2m"]
+    except Exception as exc:
+        logger.warning("outdoor temp fetch failed: %s", exc)
+        with _outdoor_temp_lock:
+            return _outdoor_temp_cache["temp"]
+    with _outdoor_temp_lock:
+        _outdoor_temp_cache["temp"] = float(temp)
+        _outdoor_temp_cache["ts"] = _time.time()
+    return float(temp)
+
+
+def _record_device_state(s: dict, active: int) -> None:
+    """Persist one telemetry row for the preheat-estimate timeseries."""
+    db = SessionLocal()
+    try:
+        db.add(DeviceStateLog(
+            ts=app_now(),
+            temperature=s.get("temperature"),
+            target_temp=s.get("targetTemp"),
+            active=active,
+            heat_on=1 if s.get("heatOn") else 0,
+            remaining_time=s.get("remainingTime"),
+            outdoor_temp=_get_outdoor_temp(),
+        ))
+        db.commit()
+    except Exception as exc:
+        logger.warning("device state log insert failed: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def log_device_state():
     if not harvia:
         return
@@ -1264,6 +1328,11 @@ def log_device_state():
 
     active = s.get("active") or 0
     prev = _last_device_active
+
+    # Persist telemetry while heating, plus one trailing row on the 1→0
+    # transition so heating segments terminate cleanly in the timeseries.
+    if active == 1 or prev == 1:
+        _record_device_state(s, active)
 
     if active == 1:
         logger.info(
@@ -1325,6 +1394,22 @@ def push_live_activity_updates():
         logger.error("push_live_activity_updates failed: %s", exc)
 
 
+def cleanup_device_state_log():
+    """Trim telemetry rows past the retention window (caps table growth)."""
+    cutoff = app_now() - timedelta(days=DEVICE_LOG_RETENTION_DAYS)
+    db = SessionLocal()
+    try:
+        deleted = db.query(DeviceStateLog).filter(DeviceStateLog.ts < cutoff).delete()
+        db.commit()
+        if deleted:
+            logger.info("device state log cleanup: removed %s rows older than %s days", deleted, DEVICE_LOG_RETENTION_DAYS)
+    except Exception as exc:
+        logger.warning("device state log cleanup failed: %s", exc)
+        db.rollback()
+    finally:
+        db.close()
+
+
 scheduler = BackgroundScheduler(daemon=True)
 scheduler.add_job(check_and_auto_shutoff,    "interval", seconds=60,  id="auto_shutoff")
 # Preheat reminders removed: Live Activity carries the session on the Lock Screen
@@ -1333,6 +1418,7 @@ scheduler.add_job(check_session_ending,      "interval", seconds=60,  id="sessio
 scheduler.add_job(refresh_harvia_token,      "interval", minutes=30,  id="token_refresh")
 scheduler.add_job(log_device_state,          "interval", seconds=60,  id="device_state_log")
 scheduler.add_job(push_live_activity_updates,"interval", seconds=60,  id="live_activity_updates")
+scheduler.add_job(cleanup_device_state_log,  "interval", hours=24,    id="device_state_cleanup")
 
 
 # ---------------------------------------------------------------------------

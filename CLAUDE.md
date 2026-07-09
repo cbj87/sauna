@@ -69,6 +69,9 @@ PORT=5000
 RESEND_API_KEY=<resend-api-key>        # Required for password reset emails
 EMAIL_FROM=noreply@sweatbox.cbj87.dev  # Sender address (domain must be verified in Resend)
 APP_URL=https://sweatbox.cbj87.dev     # Used in password reset link emails
+WEATHER_LAT=<latitude>                 # Sauna location for Open-Meteo outdoor temp (unset = skipped)
+WEATHER_LON=<longitude>
+DEVICE_LOG_RETENTION_DAYS=365          # Telemetry retention for preheat estimates
 ```
 
 ---
@@ -121,8 +124,9 @@ APP_URL=https://sweatbox.cbj87.dev     # Used in password reset link emails
 1. `check_and_auto_shutoff()` — advance booking states, turn off sauna when session ends; sends CRITICAL alert if shut-off fails
 2. `check_session_ending()` — push notification 15 min before session end (time-sensitive)
 3. `refresh_harvia_token()` — proactive Cognito token refresh (every 30 min)
-4. `log_device_state()` — poll Harvia device state for timeseries observability
+4. `log_device_state()` — poll Harvia device state for observability; persists `DeviceStateLog` telemetry rows (temp, target, heater, Open-Meteo outdoor temp) while the heater is active — feeds preheat estimates
 5. `push_live_activity_updates()` — push Live Activity content updates to iOS devices
+6. `cleanup_device_state_log()` — daily; trims telemetry rows past `DEVICE_LOG_RETENTION_DAYS`
 
 ---
 

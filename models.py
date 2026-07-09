@@ -6,6 +6,7 @@ from sqlalchemy import (
     Column,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -271,6 +272,33 @@ class ControlLog(Base):
             "preset_name": self.preset_name,
             "notes": self.notes,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+class DeviceStateLog(Base):
+    """Per-minute device telemetry while the heater is running — feeds preheat estimates."""
+    __tablename__ = "device_state_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # Naive local time (app_now()) — segment math must line up with booking/preheat logic
+    ts = Column(DateTime, nullable=False, index=True)
+    temperature = Column(Integer, nullable=True)     # °C current
+    target_temp = Column(Integer, nullable=True)     # °C
+    active = Column(Integer, nullable=True)          # heater session on/off
+    heat_on = Column(Integer, nullable=True)         # heating element actually drawing
+    remaining_time = Column(Integer, nullable=True)  # minutes
+    outdoor_temp = Column(Float, nullable=True)      # °C from Open-Meteo
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "ts": self.ts.isoformat() if self.ts else None,
+            "temperature": self.temperature,
+            "target_temp": self.target_temp,
+            "active": self.active,
+            "heat_on": self.heat_on,
+            "remaining_time": self.remaining_time,
+            "outdoor_temp": self.outdoor_temp,
         }
 
 
