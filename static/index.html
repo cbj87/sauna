@@ -1184,6 +1184,9 @@ function SettingsPanel({
   // fired on app launch; if the user said no, they toggle it in iOS Settings.
   const canOpenPanel = isNative ? isSubscribed : (vapidKey && !notifLoading);
   const { unit, setUnit, fmtC } = useTempUnit();
+  // currentMember is a login-time snapshot; the members list is refetched
+  // after every profile save, so prefer it for the displayed defaults.
+  const myProfile = members.find(m => m.id === currentMember?.id) ?? currentMember;
   const ToggleRow = ({ title, subtitle, checked, onChange, disabled }) => (
     <div className="grid grid-cols-[1fr_5rem] items-center gap-4 border-t border-gray-700/70 px-4 py-4 first:border-t-0">
       <div>
@@ -1232,7 +1235,7 @@ function SettingsPanel({
         <button onClick={onEditProfile} className="flex w-full items-center justify-between gap-4 px-4 py-4 text-left active:bg-gray-700/40 transition-colors">
           <div>
             <div className="text-sm font-semibold text-white">Default session</div>
-            <div className="mt-0.5 text-xs text-gray-500">{fmtC(currentMember?.default_temp)} · {currentMember?.default_time} min</div>
+            <div className="mt-0.5 text-xs text-gray-500">{fmtC(myProfile?.default_temp)} · {myProfile?.default_time} min</div>
           </div>
           <span className="text-gray-500 text-lg leading-none">›</span>
         </button>
