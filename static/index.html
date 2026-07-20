@@ -1795,11 +1795,22 @@ function MembersPanel({ members, onReload, currentMember, pendingEditMemberId, o
     setPwError('');
   }
 
-  // Auto-open the edit form when routed here from Settings.
+  // Auto-open the edit form when routed here from Settings ("Default session"
+  // row). The members list lives far below the fold, so without the scroll the
+  // tap appears to do nothing.
   useEffect(() => {
     if (!pendingEditMemberId) return;
     const m = members.find(x => x.id === pendingEditMemberId);
-    if (m) startEdit(m);
+    if (m) {
+      startEdit(m);
+      // The edit form renders on the next commit — scroll once it exists.
+      // behavior:'auto' (not 'smooth'): smooth scrollIntoView is a no-op in
+      // some embedded WebViews, which would leave the form invisibly below
+      // the fold — the exact bug this scroll exists to fix.
+      setTimeout(() => {
+        document.getElementById(`member-card-${m.id}`)?.scrollIntoView({ behavior: 'auto', block: 'center' });
+      }, 100);
+    }
     onConsumeEditMemberId?.();
   }, [pendingEditMemberId, members]);
 
@@ -1871,7 +1882,7 @@ function MembersPanel({ members, onReload, currentMember, pendingEditMemberId, o
             const isEditing = editingId === m.id;
             const isMe = m.id === currentMember?.id;
             return (
-              <div key={m.id} className="bg-gray-700/50 rounded-xl overflow-hidden">
+              <div key={m.id} id={`member-card-${m.id}`} className="bg-gray-700/50 rounded-xl overflow-hidden">
                 <div className="flex items-center justify-between px-4 py-3">
                   <div className="flex items-center gap-3">
                     <div className="w-3 h-3 rounded-full flex-shrink-0" style={{background:m.color}} />
