@@ -104,12 +104,21 @@ final class DeepLinkBroker: ObservableObject {
         }
     }
 
-    /// Map a sweatbox:// URL onto the web app, e.g. sweatbox://rsvp/abc → https://…/rsvp/abc
+    /// Map a sweatbox:// URL onto the web app, e.g. sweatbox://rsvp/abc → https://…/rsvp/abc.
+    /// "open" is the generic "bring the app to the web root" host (the Live
+    /// Activity tap target) — it maps to "/", not to a "/open" path, which the
+    /// server doesn't serve as a page.
     static func webURL(fromCustomScheme url: URL) -> URL? {
         guard url.scheme == AppConfig.urlScheme else { return nil }
         guard var comps = URLComponents(url: AppConfig.webAppURL, resolvingAgainstBaseURL: false) else { return nil }
-        let hostSegment = url.host.map { "/\($0)" } ?? ""
-        comps.path = hostSegment + url.path
+        let hostSegment: String
+        if let host = url.host, host != "open" {
+            hostSegment = "/\(host)"
+        } else {
+            hostSegment = ""
+        }
+        let path = hostSegment + url.path
+        comps.path = path.isEmpty ? "/" : path
         comps.query = url.query
         return comps.url
     }

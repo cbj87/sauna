@@ -2,6 +2,8 @@
 Harvia MyHarvia cloud API client.
 Handles Cognito auth (SRP), token refresh, and all GraphQL calls.
 """
+from __future__ import annotations
+
 import collections
 import json
 import logging
@@ -228,24 +230,30 @@ class HarviaClient:
             logger.warning("Could not read reported onTime: %s", exc)
             return None
 
-    def turn_on(self, target_temp_c: int, on_time_minutes: int) -> dict:
-        """Turn the sauna on for ~on_time_minutes.
-
-        The device latches reported.onTime at the active 0->1 edge, and a
-        written onTime takes ~20-30s to commit from desired->reported. If we
-        activate in the same call (the old behaviour) the device latches a
-        stale onTime — the long-standing "session capped at 60 min" bug.
-
-        So we (1) stage the rounded onTime while off, (2) wait for it to commit
-        to reported, then (3) activate. maxOnTime is NOT writable on this unit
-        and is intentionally not sent.
-        """
+    def turn_on_stage(self, target_temp_c: int, on_time_minutes: int) -> int:
+        """Step 1 of turn-on: stage the rounded onTime (+ targetTemp) while the
+        sauna is still off.  One fast API call — safe to run in the request
+        path, and doubles as a reachability check.  Returns the staged device
+        minutes to pass to turn_on_activate()."""
         device_minutes = self.device_on_time(on_time_minutes)
-
-        # 1. Stage onTime (+ targetTemp) while still off.
         self.set_state({"onTime": device_minutes, "targetTemp": target_temp_c})
+        return device_minutes
 
-        # 2. Wait for reported.onTime to commit so the activation latches it.
+    def turn_on_activate(
+        self,
+        target_temp_c: int,
+        device_minutes: int,
+        should_activate=None,
+    ) -> dict | None:
+        """Steps 2-3 of turn-on: wait for reported.onTime to commit (up to 45s
+        of polling), then activate.  Slow — run this off the request thread.
+
+        `should_activate` (optional callable) is consulted right before sending
+        active=1: if it returns False the activation is abandoned and None is
+        returned.  This lets a turn-off issued while we were waiting cancel the
+        pending activation instead of re-igniting the sauna afterwards.
+        """
+        # Wait for reported.onTime to commit so the activation latches it.
         deadline = time.monotonic() + 45
         committed = False
         while time.monotonic() < deadline:
@@ -258,10 +266,30 @@ class HarviaClient:
                 "onTime did not commit to %d within 45s — activating anyway; "
                 "session length may be wrong this cycle", device_minutes)
 
-        # 3. Activate. reported.onTime is committed, so the device uses it.
-        logger.info("turn_on: device onTime=%d min (requested %d), committed=%s — activating",
-                    device_minutes, on_time_minutes, committed)
+        if should_activate is not None and not should_activate():
+            logger.info("turn_on: activation aborted — superseded by a turn-off or newer start")
+            return None
+
+        # Activate. reported.onTime is committed, so the device uses it.
+        logger.info("turn_on: device onTime=%d min, committed=%s — activating",
+                    device_minutes, committed)
         return self.set_state({"active": 1, "targetTemp": target_temp_c})
+
+    def turn_on(self, target_temp_c: int, on_time_minutes: int) -> dict | None:
+        """Turn the sauna on for ~on_time_minutes (synchronous stage + activate).
+
+        The device latches reported.onTime at the active 0->1 edge, and a
+        written onTime takes ~20-30s to commit from desired->reported. If we
+        activate in the same call (the old behaviour) the device latches a
+        stale onTime — the long-standing "session capped at 60 min" bug.
+
+        So we (1) stage the rounded onTime while off, (2) wait for it to commit
+        to reported, then (3) activate. maxOnTime is NOT writable on this unit
+        and is intentionally not sent.  Server endpoints call the stage/activate
+        halves separately so the slow wait runs off the request thread.
+        """
+        device_minutes = self.turn_on_stage(target_temp_c, on_time_minutes)
+        return self.turn_on_activate(target_temp_c, device_minutes)
 
     def turn_off(self) -> dict:
         return self.set_state({"active": 0})

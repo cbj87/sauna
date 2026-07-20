@@ -30,7 +30,7 @@ struct SweatBoxLiveActivityWidget: Widget {
 
                 DynamicIslandExpandedRegion(.trailing) {
                     VStack(alignment: .trailing, spacing: 3) {
-                        Text(remainingText(context.state))
+                        RemainingView(state: context.state, alignment: .trailing)
                             .font(.title3.weight(.heavy))
                             .foregroundStyle(heatGradient)
                             .lineLimit(1)
@@ -99,7 +99,7 @@ private struct LockScreenLiveActivityView: View {
                 DividerLine()
 
                 VStack(spacing: 0) {
-                    Text(remainingText(state))
+                    RemainingView(state: state, alignment: .center)
                         .font(.system(size: 45, weight: .heavy, design: .rounded))
                         .foregroundStyle(heatGradient)
                         .lineLimit(1)
@@ -167,6 +167,25 @@ private struct LockScreenLiveActivityView: View {
                 )
                 .blendMode(.screen)
             }
+        }
+    }
+}
+
+/// Remaining-time readout. When the state carries an end date, this renders a
+/// system countdown timer that ticks by itself — the Live Activity stays
+/// correct even when no update push arrives. Falls back to the static
+/// remainingMinutes for old payloads or ended sessions.
+private struct RemainingView: View {
+    let state: SaunaActivityAttributes.ContentState
+    let alignment: TextAlignment
+
+    var body: some View {
+        if let end = state.endDate, state.active, end > Date() {
+            Text(timerInterval: Date.now...end, countsDown: true)
+                .monospacedDigit()
+                .multilineTextAlignment(alignment)
+        } else {
+            Text(remainingText(state))
         }
     }
 }

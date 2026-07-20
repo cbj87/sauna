@@ -122,6 +122,40 @@ _login_lock = threading.Lock()
 _booking_lock = threading.Lock()
 _apns_jwt_cache: dict[str, float | str] = {"token": "", "created_at": 0.0}
 
+# ---------------------------------------------------------------------------
+# Async sauna activation (B1)
+#
+# turn_on() takes 20-45s (the device needs onTime committed to `reported`
+# before activating), which blew past the frontend's 10s request timeout.
+# Endpoints now stage the state synchronously (fast, proves the device is
+# reachable) and run the slow wait + activate in a background thread.
+#
+# The generation counter is the cancellation mechanism: every new start takes
+# a fresh generation, and any turn-off bumps it.  A pending background
+# activation re-checks its generation right before sending active=1, so a
+# turn-off issued during the wait window can never be undone by a stale
+# activation re-igniting the sauna.
+# ---------------------------------------------------------------------------
+_activation_lock = threading.Lock()
+_activation_generation = 0
+
+
+def _next_activation_generation() -> int:
+    global _activation_generation
+    with _activation_lock:
+        _activation_generation += 1
+        return _activation_generation
+
+
+def _activation_still_current(gen: int) -> bool:
+    with _activation_lock:
+        return _activation_generation == gen
+
+
+def _cancel_pending_activations() -> None:
+    """Invalidate any in-flight background activation (called on turn-off)."""
+    _next_activation_generation()
+
 
 def _get_client_ip() -> str:
     return request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
@@ -739,14 +773,17 @@ def _create_invites(db, booking: Booking, inviter: FamilyMember, member_ids: lis
     return created
 
 
+def _booking_end_datetime(booking: Booking, now: datetime | None = None) -> datetime:
+    """Naive local datetime when the booking ends (handles midnight-spanning)."""
+    now = now or app_now()
+    if booking.end_time < booking.start_time and now.time() >= booking.end_time:
+        return datetime.combine(now.date() + timedelta(days=1), booking.end_time)
+    return datetime.combine(now.date(), booking.end_time)
+
+
 def _booking_remaining_minutes(booking: Booking, now: datetime | None = None) -> int:
     now = now or app_now()
-    end_dt = datetime.combine(now.date(), booking.end_time)
-    if booking.end_time < booking.start_time and now.time() < booking.end_time:
-        end_dt = datetime.combine(now.date(), booking.end_time)
-    elif booking.end_time < booking.start_time:
-        end_dt = datetime.combine(now.date() + timedelta(days=1), booking.end_time)
-    remaining = round((end_dt - now).total_seconds() / 60)
+    remaining = round((_booking_end_datetime(booking, now) - now).total_seconds() / 60)
     return max(0, remaining)
 
 
@@ -756,6 +793,10 @@ def _live_activity_payload_for_booking(booking: Booking, status: dict | None = N
     if current_temp_f is None and status.get("temperature") is not None:
         current_temp_f = c_to_f(status["temperature"])
     target_temp_f = c_to_f(booking.target_temp) if booking.target_temp is not None else status.get("targetTempF")
+    # endsAtMillis lets the widget run a self-ticking countdown — the remaining
+    # time stays correct even if update pushes stop arriving.
+    end_local = _booking_end_datetime(booking)
+    ends_at_millis = int(end_local.replace(tzinfo=ZoneInfo(APP_TIMEZONE)).timestamp() * 1000)
     return {
         "bookingId": booking.id,
         "memberId": booking.member_id,
@@ -763,6 +804,7 @@ def _live_activity_payload_for_booking(booking: Booking, status: dict | None = N
         "currentTempF": current_temp_f,
         "targetTempF": target_temp_f,
         "remainingMinutes": _booking_remaining_minutes(booking),
+        "endsAtMillis": ends_at_millis,
         "heatOn": bool(status.get("active", True)),
         "active": booking.status in ("active", "preheating", "scheduled"),
         "updatedAtMillis": int(_time.time() * 1000),
@@ -897,6 +939,61 @@ def _push_live_activity_start_to_tokens(
     return result
 
 
+def _ended_live_activity_state() -> dict:
+    """A generic 'session over' ContentState — every key the widget's Codable
+    struct requires must be present or iOS silently drops the push."""
+    return {
+        "bookingId": None,
+        "memberId": None,
+        "bookingName": "Sauna Session",
+        "currentTempF": None,
+        "targetTempF": None,
+        "remainingMinutes": 0,
+        "endsAtMillis": None,
+        "heatOn": False,
+        "active": False,
+        "updatedAtMillis": int(_time.time() * 1000),
+    }
+
+
+def _end_stale_activities_for_devices(db, native_device_ids: list[str]) -> None:
+    """End any still-registered Live Activities on these devices.
+
+    A push-to-start always creates a NEW activity — without this sweep the old
+    (possibly broken) activity stays on the Lock Screen next to the new one.
+    Runs right before a remote start so each device ends up with exactly one.
+    """
+    if not native_device_ids:
+        return
+    rows = (
+        db.query(LiveActivityToken)
+        .filter(LiveActivityToken.native_device_id.in_(native_device_ids))
+        .all()
+    )
+    if not rows:
+        return
+    # Capture plain values first — every row is getting deleted below, and ORM
+    # instances go unusable once removed.
+    targets = [(row.token, row.native_device_id) for row in rows]
+    device_env = _device_env_map(db, [ndid for _, ndid in targets])
+    payload = {
+        "aps": {
+            "timestamp": int(_time.time()),
+            "event": "end",
+            "dismissal-date": int(_time.time()),
+            "content-state": _ended_live_activity_state(),
+        }
+    }
+    for token, ndid in targets:
+        _send_live_activity_apns(token, payload, environment=device_env.get(ndid))
+    (
+        db.query(LiveActivityToken)
+        .filter(LiveActivityToken.token.in_([t for t, _ in targets]))
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+
+
 def _fanout_live_activity_start(
     booking_id: int,
     exclude_native_device_id: str | None = None,
@@ -918,6 +1015,9 @@ def _fanout_live_activity_start(
             if not tokens:
                 result["skipped"] = "no eligible push-to-start tokens"
                 return result
+            # End whatever activity each target device is already showing —
+            # the start push below always creates a fresh one.
+            _end_stale_activities_for_devices(db, [t.native_device_id for t in tokens])
             content_state = _live_activity_payload_for_booking(booking, status)
             title = "Sauna is on"
             body = f"{booking.member.name if booking.member else 'Someone'} started a session."
@@ -991,23 +1091,49 @@ def _fanout_live_activity_end(booking_id: int, reason: str = "ended") -> None:
             if not booking:
                 return
             tokens = _live_activity_recipient_tokens(db, booking)
-            if not tokens:
-                return
+            # Snapshot ids before any push: a stale-token response inside
+            # _push_live_activity_to_tokens deletes+commits rows, after which
+            # the ORM instances can't be touched again.
+            doomed_ids = [
+                t.id for t in tokens
+                if t.booking_id == booking.id or t.booking_id is None
+            ]
+            covered = {t.native_device_id for t in tokens}
             content_state = _live_activity_payload_for_booking(booking)
             content_state["heatOn"] = False
             content_state["active"] = False
             content_state["remainingMinutes"] = 0
-            _push_live_activity_to_tokens(
-                db, tokens, content_state,
-                event="end",
-                dismissal_date=int(_time.time()),
-            )
+            content_state["endsAtMillis"] = None
+            if tokens:
+                _push_live_activity_to_tokens(
+                    db, tokens, content_state,
+                    event="end",
+                    dismissal_date=int(_time.time()),
+                )
+            # Also broadcast the end via push-to-start tokens — that's the only
+            # handle we have on activities remote-started while the app was
+            # closed. Harmless no-op on devices with nothing running. (Stale
+            # rows are pruned inside on BadDeviceToken/Unregistered; valid p2s
+            # rows are long-lived and must NOT be dropped wholesale.)
+            p2s_tokens = [
+                t for t in _live_activity_push_to_start_recipients(db, booking)
+                if t.native_device_id not in covered
+            ]
+            if p2s_tokens:
+                _push_live_activity_to_tokens(
+                    db, p2s_tokens, content_state,
+                    event="end",
+                    dismissal_date=int(_time.time()),
+                )
             # Tokens for this booking are dead weight now; surviving tokens for
             # other bookings stay. Match by booking_id when set; treat NULL as
             # legacy/test rows and drop them too.
-            for token_row in tokens:
-                if token_row.booking_id == booking.id or token_row.booking_id is None:
-                    db.delete(token_row)
+            if doomed_ids:
+                (
+                    db.query(LiveActivityToken)
+                    .filter(LiveActivityToken.id.in_(doomed_ids))
+                    .delete(synchronize_session=False)
+                )
             db.commit()
     except Exception as exc:
         logger.error("_fanout_live_activity_end(booking_id=%s) failed: %s", booking_id, exc)
@@ -1099,6 +1225,9 @@ def _safe_turn_off(reason: str = "") -> bool:
 
     Returns True if confirmed off (or off command sent and unverifiable)."""
     global _last_app_off_ts
+    # Abort any staged-but-not-yet-activated start so a background activation
+    # can't re-ignite the sauna after this off.
+    _cancel_pending_activations()
     client = get_harvia()
     for attempt in (1, 2):
         try:
@@ -1460,7 +1589,16 @@ def push_live_activity_updates():
             if not booking:
                 return
             tokens = _live_activity_recipient_tokens(db, booking)
-            if not tokens:
+            # Devices whose activity was remote-started while the app was
+            # closed never upload a per-activity token — but a push-to-start
+            # token also delivers updates to the activity it started
+            # (input-push-token), so fall back to it for those devices.
+            covered = {t.native_device_id for t in tokens}
+            p2s_tokens = [
+                t for t in _live_activity_push_to_start_recipients(db, booking)
+                if t.native_device_id not in covered
+            ]
+            if not tokens and not p2s_tokens:
                 return
             status = None
             if harvia:
@@ -1470,6 +1608,8 @@ def push_live_activity_updates():
                     logger.warning("Live Activity update: Harvia status fetch failed: %s", exc)
             content_state = _live_activity_payload_for_booking(booking, status)
             _push_live_activity_to_tokens(db, tokens, content_state, event="update")
+            if p2s_tokens:
+                _push_live_activity_to_tokens(db, p2s_tokens, content_state, event="update")
     except Exception as exc:
         logger.error("push_live_activity_updates failed: %s", exc)
 
@@ -2328,6 +2468,54 @@ def _auto_create_booking(member_id: int, member_name: str, target_c: int, on_tim
         return None
 
 
+def _activate_sauna_async(
+    target_c: int,
+    device_minutes: int,
+    member_id: int,
+    context: str,
+    failure_body: str,
+    after_activate=None,
+) -> None:
+    """Finish a staged turn-on in the background (B1 — see the activation
+    generation notes above).
+
+    The endpoint has already run turn_on_stage(); this waits for the device to
+    commit onTime and sends active=1 off the request thread.  On failure the
+    initiating member gets a time-sensitive alert (the status poll is the
+    other signal).  `after_activate` runs post-activation work that should only
+    fire once the sauna is actually on (admin alerts, Live Activity fanout).
+    """
+    gen = _next_activation_generation()
+
+    def run():
+        try:
+            result = get_harvia().turn_on_activate(
+                target_c, device_minutes,
+                should_activate=lambda: _activation_still_current(gen),
+            )
+        except Exception as exc:
+            logger.error("Background sauna activation failed (%s): %s", context, exc)
+            _notify_member(member_id, {
+                "title": "⚠️ Sauna may not have started",
+                "body": failure_body,
+                "tag": "sauna-start-failed",
+                "thread_id": "sauna-safety",
+                "interruption_level": "time-sensitive",
+                "url": "/",
+            })
+            return
+        if result is None:
+            logger.info("Sauna activation cancelled (%s) — superseded by turn-off/newer start", context)
+            return
+        if after_activate is not None:
+            try:
+                after_activate()
+            except Exception as exc:
+                logger.error("Post-activation work failed (%s): %s", context, exc)
+
+    threading.Thread(target=run, daemon=True, name=f"sauna-activate-{gen}").start()
+
+
 @app.route("/api/sauna/on", methods=["POST"])
 def sauna_on():
     db, member, error = require_auth()
@@ -2357,12 +2545,21 @@ def sauna_on():
         native_device_id = (body.get("nativeDeviceId") or body.get("native_device_id") or "").strip() or None
     finally:
         db.close()
+    # Stage synchronously (fast — one Harvia call, proves the device is
+    # reachable), then finish the slow commit-wait + activate in the
+    # background so the response returns in ~1s instead of 20-45s.
     try:
-        logger.info("sauna/on → turn_on(target_c=%d °C / %d °F, on_time=%d min)", target_c, c_to_f(target_c), on_time)
-        get_harvia().turn_on(target_c, on_time)
-        booking_id = _auto_create_booking(mid, mname, target_c, on_time)
-        _log_sauna_action(mid, mname, "on", target_temp=target_c, on_time=on_time,
-                          notes=json.dumps({"target_f": c_to_f(target_c)}))
+        logger.info("sauna/on → staging (target_c=%d °C / %d °F, on_time=%d min)", target_c, c_to_f(target_c), on_time)
+        device_minutes = get_harvia().turn_on_stage(target_c, on_time)
+    except Exception as exc:
+        logger.error("Turn on failed: %s", exc)
+        return err(str(exc), 502)
+
+    booking_id = _auto_create_booking(mid, mname, target_c, on_time)
+    _log_sauna_action(mid, mname, "on", target_temp=target_c, on_time=on_time,
+                      notes=json.dumps({"target_f": c_to_f(target_c)}))
+
+    def _after_on():
         if booking_id is not None:
             _fanout_live_activity_start(booking_id, exclude_native_device_id=native_device_id)
         _notify_admins({
@@ -2371,10 +2568,21 @@ def sauna_on():
             "tag": "sauna-on",
             "url": "/",
         }, pref_key="sauna_control")
-        return jsonify({"ok": True, "targetTemp": target_c, "targetTempF": c_to_f(target_c), "onTime": on_time})
-    except Exception as exc:
-        logger.error("Turn on failed: %s", exc)
-        return err(str(exc), 502)
+
+    _activate_sauna_async(
+        target_c, device_minutes, mid,
+        context=f"sauna/on by {mname}",
+        failure_body="The start command could not be confirmed — check the sauna status.",
+        after_activate=_after_on,
+    )
+    return jsonify({
+        "ok": True,
+        "pending": True,  # activation continues in the background
+        "bookingId": booking_id,
+        "targetTemp": target_c,
+        "targetTempF": c_to_f(target_c),
+        "onTime": on_time,
+    })
 
 
 @app.route("/api/sauna/off", methods=["POST"])
@@ -2462,14 +2670,21 @@ def sauna_extend():
             "sauna/extend → cycling off→on: target_c=%d °C / %d °F, new_on_time=%d min (remaining=%s + add=%d, no booking modified)",
             target_temp, c_to_f(target_temp), new_on_time, client_remaining, add_minutes,
         )
-        # Cycle off → on so the device resets its countdown to new_on_time.
+        # Cycle off → stage synchronously (both fast), then finish the slow
+        # commit-wait + reactivate in the background so the device resets its
+        # countdown to new_on_time without blowing the client timeout.
         get_harvia().turn_off()
         _time.sleep(1.5)
-        get_harvia().turn_on(target_temp, new_on_time)
+        device_minutes = get_harvia().turn_on_stage(target_temp, new_on_time)
+        _activate_sauna_async(
+            target_temp, device_minutes, mid,
+            context=f"sauna/extend by {mname}",
+            failure_body="Extending turned the sauna off but couldn't confirm it restarted — check the sauna.",
+        )
         _log_sauna_action(mid, mname, "extend", target_temp=target_temp, on_time=new_on_time,
                           notes=json.dumps({"added_mins": add_minutes, "prev_remaining": client_remaining,
                                             "target_f": c_to_f(target_temp)}))
-        return jsonify({"ok": True, "addedMinutes": add_minutes, "newOnTime": new_on_time})
+        return jsonify({"ok": True, "pending": True, "addedMinutes": add_minutes, "newOnTime": new_on_time})
     except Exception as exc:
         logger.error("Extend session failed: %s", exc)
         return err(str(exc), 502)
@@ -2589,21 +2804,28 @@ def sauna_set():
         diag = {**({"target_f": c_to_f(log_target)} if log_target else {}), **extra}
         notes = json.dumps(diag) if diag else None
 
+        pending = False
         if "onTime" in payload and "targetTemp" in payload:
             # Device only registers onTime changes on an active 0→1 transition.
-            # Cycle off → on so the new timer takes effect.
+            # Cycle off → stage synchronously, reactivate in the background.
             target_temp = payload["targetTemp"]
             on_time     = int(payload["onTime"])
             logger.info("sauna/set → cycling off→on: target_c=%d °C / %d °F, on_time=%d min (no booking modified)", target_temp, c_to_f(target_temp), on_time)
             get_harvia().turn_off()
             _time.sleep(1.5)
-            get_harvia().turn_on(target_temp, on_time)
+            device_minutes = get_harvia().turn_on_stage(target_temp, on_time)
+            _activate_sauna_async(
+                target_temp, device_minutes, mid,
+                context=f"sauna/set by {mname}",
+                failure_body="Updating settings turned the sauna off but couldn't confirm it restarted — check the sauna.",
+            )
+            pending = True
         else:
             # Temperature-only or other field changes — send directly.
             get_harvia().set_state(payload)
 
         _log_sauna_action(mid, mname, "set", target_temp=log_target, on_time=log_on_time, notes=notes)
-        return jsonify({"ok": True, "applied": payload})
+        return jsonify({"ok": True, "pending": pending, "applied": payload})
     except Exception as exc:
         logger.error("Set state failed: %s", exc)
         return err(str(exc), 502)
@@ -3369,6 +3591,7 @@ def cancel_booking(booking_id: int):
         # If the session was in progress, turn the sauna off immediately
         if was_active:
             try:
+                _cancel_pending_activations()
                 get_harvia().turn_off()
                 logger.info("Sauna turned off after active booking %d was cancelled", booking.id)
             except Exception as exc:
@@ -3510,8 +3733,10 @@ def preheat_booking(booking_id: int):
 
         b_temp = booking.target_temp or 90
         b_time = booking.on_time or 60
+        # Stage synchronously (fast reachability check), activate in the
+        # background — turn_on's commit-wait takes 20-45s, past the client timeout.
         try:
-            get_harvia().turn_on(b_temp, b_time)
+            device_minutes = get_harvia().turn_on_stage(b_temp, b_time)
         except Exception as exc:
             logger.error("Preheat API call failed: %s", exc)
             return err(f"Harvia API error: {exc}", 502)
@@ -3519,14 +3744,24 @@ def preheat_booking(booking_id: int):
         booking.status = "preheating"
         db.commit()
         booking_id = booking.id
-        _notify_admins({
-            "title": "🔥 Sauna is preheating",
-            "body": f"{member.name} started preheat — {c_to_f(b_temp)}°F ({b_temp}°C) for {b_time} min.",
-            "tag": "sauna-on",
-            "url": "/",
-        }, pref_key="sauna_control")
-        _fanout_live_activity_start(booking_id, exclude_native_device_id=native_device_id)
-        return jsonify({"ok": True, "status": "preheating"})
+        mid, mname = member.id, member.name
+
+        def _after_preheat():
+            _notify_admins({
+                "title": "🔥 Sauna is preheating",
+                "body": f"{mname} started preheat — {c_to_f(b_temp)}°F ({b_temp}°C) for {b_time} min.",
+                "tag": "sauna-on",
+                "url": "/",
+            }, pref_key="sauna_control")
+            _fanout_live_activity_start(booking_id, exclude_native_device_id=native_device_id)
+
+        _activate_sauna_async(
+            b_temp, device_minutes, mid,
+            context=f"preheat booking #{booking_id} by {mname}",
+            failure_body="Preheat could not be confirmed — check the sauna status.",
+            after_activate=_after_preheat,
+        )
+        return jsonify({"ok": True, "pending": True, "status": "preheating"})
     finally:
         db.close()
 
@@ -4024,6 +4259,14 @@ def serve_rsvp_page(token):
     # Explicit rule: Flask's built-in static route (/<path:filename>, from
     # static_url_path="") outranks the catch-all for unknown paths and 404s,
     # so the public RSVP page needs its own non-path-converter route.
+    return send_from_directory(app.static_folder, "index.html")
+
+
+@app.route("/open")
+def serve_open_page():
+    # The iOS Live Activity's tap target is sweatbox://open, which app builds
+    # map to /open — same static-route-outranks-catch-all rule as /rsvp above,
+    # so without this the tap lands on Flask's bare 404 page.
     return send_from_directory(app.static_folder, "index.html")
 
 

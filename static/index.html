@@ -214,13 +214,19 @@ const NativeBridge = (() => {
     }
   };
 
+  // Both token uploads forward the app's build environment (sandbox|production)
+  // as apnsEnvironment so the server's per-device APNs host can never go stale —
+  // a wrong host means BadDeviceToken and the server dropping the token, which
+  // freezes the Live Activity.
   window.addEventListener('live-activity-token', event => {
-    console.debug('Live Activity token from native', event.detail);
-    uploadNativePayload('/api/native/live-activity/token', event.detail || {});
+    const detail = event.detail || {};
+    console.debug('Live Activity token from native', detail);
+    uploadNativePayload('/api/native/live-activity/token', { ...detail, apnsEnvironment: detail.environment });
   });
   window.addEventListener('push-to-start-token', event => {
-    console.debug('Push-to-start token from native', event.detail);
-    uploadNativePayload('/api/native/live-activity/push-to-start-token', event.detail || {});
+    const detail = event.detail || {};
+    console.debug('Push-to-start token from native', detail);
+    uploadNativePayload('/api/native/live-activity/push-to-start-token', { ...detail, apnsEnvironment: detail.environment });
   });
   // Regular APNs device token (for alert notifications, not Live Activities).
   // Server stores it on NativeDevice.apns_token and prefers it over Web Push.
@@ -269,6 +275,11 @@ const NativeBridge = (() => {
     signOut: () => post('signOut'),
   };
 })();
+
+// Live Activity countdown anchor: minutes-from-now → epoch millis (null-safe).
+// The widget renders a self-ticking timer from this, so remaining time stays
+// correct even when no update push arrives.
+const endsAtFromMinutes = mins => (mins == null ? null : Date.now() + mins * 60000);
 
 async function api(path, opts = {}) {
   const controller = new AbortController();
@@ -671,6 +682,7 @@ function SaunaTimer() {
 function HomePanel({
   status, statusUpdatedAt, bookings, members, presets, currentMember, onRefresh, onBook,
   toast, tempF, setTempF, duration, setDuration, manuallySet, setManuallySet,
+  saunaStarting, onSaunaStarting,
   onOpenSchedule, onOpenMore, onSlotClick, onEmptyClick, onPreheat, onJoin, loadingBookings,
 }) {
   const { fmtF } = useTempUnit();
@@ -720,22 +732,33 @@ function HomePanel({
     currentTempF,
     targetTempF: targetTempF ?? effectiveTempF,
     remainingMinutes: remaining ?? duration,
+    endsAtMillis: endsAtFromMinutes(remaining ?? duration),
     heatOn: saunaOn,
     active: saunaOn,
     updatedAtMillis: Date.now(),
   });
 
+  // Keep the Live Activity in sync with what this screen is showing — the
+  // countdown ticks on-device, but temps only move via updates.
+  useEffect(() => {
+    if (!saunaOn) return;
+    NativeBridge.updateSaunaSession(nativePayload());
+  }, [saunaOn, activeBooking?.id, currentTempF, targetTempF, remaining]);
+
   async function handlePrimary() {
     setBusy(true);
     try {
-      if (saunaOn) {
+      if (saunaOn || saunaStarting) {
+        // While starting, "Turn off" cancels the pending activation server-side.
         await api('/api/sauna/off', { method: 'POST' });
+        onSaunaStarting?.(false);
         NativeBridge.endSaunaSession({
           bookingId: activeBooking?.id ?? null,
           reason: 'manual-off',
           updatedAtMillis: Date.now(),
         });
         toast('Sauna turned off', 'info');
+        setTimeout(onRefresh, 1500);
       } else {
         const tempToUse = currentMember?.is_admin ? fToC(effectiveTempF) : (myMaxTempC ? Math.min(seedTemp, myMaxTempC) : seedTemp);
         const durationToUse = currentMember?.is_admin ? duration : seedDur;
@@ -751,18 +774,23 @@ function HomePanel({
           }});
           if (onBook) onBook();
         }
-        await api('/api/sauna/on', { method: 'POST', body: { targetTempF: cToF(tempToUse), onTime: durationToUse, nativeDeviceId: NativeBridge.deviceId } });
+        // Server responds once the start is staged; activation continues in
+        // the background and onSaunaStarting kicks off the confirm polling.
+        const onRes = await api('/api/sauna/on', { method: 'POST', body: { targetTempF: cToF(tempToUse), onTime: durationToUse, nativeDeviceId: NativeBridge.deviceId } });
+        onSaunaStarting?.(true);
         NativeBridge.startSaunaSession({
           ...nativePayload(),
+          bookingId: onRes?.bookingId ?? activeBooking?.id ?? null,
           targetTempF: cToF(tempToUse),
           remainingMinutes: durationToUse,
+          endsAtMillis: endsAtFromMinutes(durationToUse),
           heatOn: true,
           active: true,
           updatedAtMillis: Date.now(),
         });
-        toast(currentMember?.is_admin ? 'Sauna is heating up!' : 'Session booked and sauna is heating!', 'success');
+        toast(currentMember?.is_admin ? 'Sauna is starting!' : 'Session booked — sauna is starting!', 'success');
+        if (onBook) onBook(); // pick up the auto-created tracking booking
       }
-      setTimeout(onRefresh, 1500);
     } catch(e) {
       toast(e.message, 'error');
     } finally {
@@ -784,6 +812,7 @@ function HomePanel({
       NativeBridge.updateSaunaSession({
         ...nativePayload(),
         remainingMinutes: newRemaining,
+        endsAtMillis: endsAtFromMinutes(newRemaining),
         updatedAtMillis: Date.now(),
       });
     } catch(e) {
@@ -799,8 +828,9 @@ function HomePanel({
         <div className="absolute -right-10 -top-14 h-40 w-40 rounded-full bg-orange-500/25 blur-3xl" />
         <div className="relative flex items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-black uppercase tracking-wider text-orange-300">
-              {saunaOn ? (activeBooking?.status === 'active' ? 'Sauna is on' : 'Sauna is heating') : 'Ready when you are'}
+            <p className={`text-xs font-black uppercase tracking-wider text-orange-300 ${!saunaOn && saunaStarting ? 'pulse' : ''}`}>
+              {saunaOn ? (activeBooking?.status === 'active' ? 'Sauna is on' : 'Sauna is heating')
+                : saunaStarting ? 'Sauna is starting…' : 'Ready when you are'}
             </p>
             <div className="mt-2 text-6xl font-black leading-none tracking-tight">
               {fmtF(currentTempF)}
@@ -833,7 +863,7 @@ function HomePanel({
           </div>
         </div>
 
-        {!saunaOn && currentMember?.is_admin && (
+        {!saunaOn && !saunaStarting && currentMember?.is_admin && (
           <div className="relative mt-5 grid grid-cols-[1fr_auto] gap-3">
             <div>
               <div className="mb-1 flex justify-between text-xs">
@@ -853,9 +883,9 @@ function HomePanel({
         <div className="relative mt-5 grid grid-cols-[1fr_auto_auto] gap-2">
           <button onClick={handlePrimary} disabled={busy}
             className="rounded-2xl bg-orange-500 py-3.5 text-base font-black text-black shadow-xl transition-all hover:bg-orange-400 disabled:opacity-60">
-            {busy ? '…' : saunaOn ? 'Turn off' : currentMember?.is_admin ? 'Turn on' : 'Book & start'}
+            {busy ? '…' : (saunaOn || saunaStarting) ? 'Turn off' : currentMember?.is_admin ? 'Turn on' : 'Book & start'}
           </button>
-          {saunaOn ? (
+          {(saunaOn || saunaStarting) ? (
             <button onClick={handleExtendAppTime} disabled={busy || !activeBooking}
               className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-black text-gray-200 hover:bg-white/15 disabled:opacity-40">
               +15
@@ -2030,6 +2060,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
           ...nativeSessionPayload(),
           targetTempF: Math.min(tempF, myMaxTempF),
           remainingMinutes: duration,
+          endsAtMillis: endsAtFromMinutes(duration),
           heatOn: true,
           active: true,
           updatedAtMillis: Date.now(),
@@ -2066,6 +2097,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
         currentTempF,
         targetTempF: cToF(cappedTempC),
         remainingMinutes: seedDur,
+        endsAtMillis: endsAtFromMinutes(seedDur),
         heatOn: true,
         active: true,
         updatedAtMillis: Date.now(),
@@ -2088,6 +2120,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
         bookingName: p?.label || name,
         targetTempF: p?.target_temp != null ? cToF(p.target_temp) : targetTempF,
         remainingMinutes: p?.on_time ?? duration,
+        endsAtMillis: endsAtFromMinutes(p?.on_time ?? duration),
         heatOn: true,
         active: true,
         updatedAtMillis: Date.now(),
@@ -2124,6 +2157,7 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
     currentTempF,
     targetTempF: targetTempF ?? Math.min(tempF, myMaxTempF),
     remainingMinutes: remaining ?? duration,
+    endsAtMillis: endsAtFromMinutes(remaining ?? duration),
     heatOn: sauna_on,
     active: sauna_on,
     updatedAtMillis: Date.now(),
@@ -3710,10 +3744,39 @@ function MainApp({ currentMember, onLogout, initialBookingId }) {
       const s = await api(cached === true ? '/api/sauna/status?cached=1' : '/api/sauna/status');
       setStatus(s);
       setStatusUpdatedAt(new Date());
+      return s;
     } catch(e) {
       setStatus(prev => prev); // keep stale
+      return null;
     }
   }
+
+  // Optimistic "sauna is starting" state: the server responds to start
+  // commands as soon as the state change is staged, ~20-45s before the device
+  // actually activates. While starting we show a pending state and poll live
+  // status until active=1 is confirmed (or give up after ~75s).
+  const [saunaStarting, setSaunaStarting] = useState(false);
+  useEffect(() => {
+    if (status?.active === 1 && saunaStarting) setSaunaStarting(false);
+  }, [status?.active, saunaStarting]);
+  useEffect(() => {
+    if (!saunaStarting) return;
+    let cancelled = false;
+    (async () => {
+      // Checks at roughly +10s, +25s, +40s, +55s, +75s after start.
+      for (const delay of [10000, 15000, 15000, 15000, 20000]) {
+        await new Promise(r => setTimeout(r, delay));
+        if (cancelled) return;
+        const s = await loadStatus();
+        if (cancelled || s?.active === 1) return; // clear handled by the effect above
+      }
+      if (!cancelled) {
+        setSaunaStarting(false);
+        toast("Sauna hasn't confirmed it's on yet — tap refresh to check", 'info');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [saunaStarting]);
 
   async function loadBookings(windowDays) {
     setBookingsLoading(true);
@@ -4002,12 +4065,14 @@ function MainApp({ currentMember, onLogout, initialBookingId }) {
           currentTempF: status?.temperatureF ?? cToF(status?.temperature),
           targetTempF: cToF(booking.target_temp),
           remainingMinutes: booking.on_time ?? null,
+          endsAtMillis: endsAtFromMinutes(booking.on_time ?? null),
           heatOn: true,
           active: true,
           updatedAtMillis: Date.now(),
         });
       }
       toast('Preheating started!', 'success');
+      setSaunaStarting(true);
       setSelectedSlot(null);
       loadBookings();
       loadHistory();
@@ -4197,6 +4262,8 @@ function MainApp({ currentMember, onLogout, initialBookingId }) {
             setDuration={setCtrlDuration}
             manuallySet={ctrlManuallySet}
             setManuallySet={setCtrlManuallySet}
+            saunaStarting={saunaStarting}
+            onSaunaStarting={setSaunaStarting}
             onOpenSchedule={() => setTab('schedule')}
             onOpenMore={() => setTab('settings')}
             onSlotClick={setSelectedSlot}

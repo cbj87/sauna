@@ -38,7 +38,7 @@ final class ActivityManager {
         }
 
         Task {
-            await endCurrentActivity(dismissalPolicy: .immediate)
+            await endAllActivities(dismissalPolicy: .immediate)
 
             do {
                 let attributes = SaunaActivityAttributes(
@@ -104,6 +104,9 @@ final class ActivityManager {
                 dismissalPolicy: .immediate
             )
             clearActivity(activity)
+            // One sauna → at most one Live Activity. Sweep any strays (e.g. a
+            // remote-started duplicate) so an "off" always clears the Lock Screen.
+            await endAllActivities(dismissalPolicy: .immediate)
             sendStatus(status: "ended", activityId: activity.id, bookingId: payload.bookingId, message: payload.reason)
         }
     }
@@ -155,15 +158,22 @@ final class ActivityManager {
         return nil
     }
 
-    private func endCurrentActivity(dismissalPolicy: ActivityUIDismissalPolicy) async {
-        guard let activity = currentActivity else { return }
-        let finalState = endedState(for: nil)
-        await activity.end(ActivityContent(state: finalState, staleDate: nil), dismissalPolicy: dismissalPolicy)
-        clearActivity(activity)
+    /// End every activity of our type, optionally keeping one. There is one
+    /// sauna, so anything beyond a single activity is a stray — e.g. the
+    /// duplicate a push-to-start creates next to a broken one.
+    private func endAllActivities(except keepId: String? = nil, dismissalPolicy: ActivityUIDismissalPolicy) async {
+        for activity in Activity<SaunaActivityAttributes>.activities where activity.id != keepId {
+            let finalState = endedState(for: nil, basedOn: activity.content.state)
+            await activity.end(ActivityContent(state: finalState, staleDate: nil), dismissalPolicy: dismissalPolicy)
+            clearActivity(activity)
+        }
     }
 
-    private func endedState(for payload: EndSaunaSessionPayload?) -> SaunaActivityAttributes.ContentState {
-        let state = lastState
+    private func endedState(
+        for payload: EndSaunaSessionPayload?,
+        basedOn state: SaunaActivityAttributes.ContentState? = nil
+    ) -> SaunaActivityAttributes.ContentState {
+        let state = state ?? lastState
         return SaunaActivityAttributes.ContentState(
             bookingId: payload?.bookingId ?? state?.bookingId,
             memberId: state?.memberId,
@@ -171,6 +181,7 @@ final class ActivityManager {
             currentTempF: state?.currentTempF,
             targetTempF: state?.targetTempF,
             remainingMinutes: 0,
+            endsAtMillis: nil,
             heatOn: false,
             active: false,
             updatedAtMillis: payload?.updatedAtMillis ?? Int64(Date().timeIntervalSince1970 * 1000)
@@ -196,6 +207,7 @@ final class ActivityManager {
                     bookingId: activity.content.state.bookingId,
                     token: tokenData.hexString,
                     state: activity.activityState.description,
+                    environment: APNsEnvironment.current,
                     updatedAtMillis: Int64(Date().timeIntervalSince1970 * 1000)
                 )
                 await MainActor.run {
@@ -215,6 +227,10 @@ final class ActivityManager {
                     self?.observePushTokenUpdates(for: activity)
                     self?.sendStatus(status: "adopted", activityId: activity.id, bookingId: activity.content.state.bookingId, message: nil)
                 }
+                // A push-to-start creates a brand-new activity and can't end
+                // the old one itself — enforce the one-activity invariant on
+                // every adoption.
+                await self?.endAllActivities(except: activity.id, dismissalPolicy: .immediate)
             }
         }
     }
@@ -236,6 +252,7 @@ final class ActivityManager {
     private func emitPushToStartToken(_ tokenData: Data) {
         let payload = PushToStartTokenPayload(
             token: tokenData.hexString,
+            environment: APNsEnvironment.current,
             updatedAtMillis: Int64(Date().timeIntervalSince1970 * 1000)
         )
         cachedPushToStartToken = payload

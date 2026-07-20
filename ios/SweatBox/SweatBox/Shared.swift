@@ -9,9 +9,17 @@ struct SaunaActivityAttributes: ActivityAttributes {
         let currentTempF: Int?
         let targetTempF: Int?
         let remainingMinutes: Int?
+        /// Epoch millis when the session ends. Drives the widget's self-ticking
+        /// countdown so remaining time stays correct between (or without) pushes.
+        /// Optional so pushes from older server builds still decode.
+        let endsAtMillis: Int64?
         let heatOn: Bool
         let active: Bool
         let updatedAtMillis: Int64
+
+        var endDate: Date? {
+            endsAtMillis.map { Date(timeIntervalSince1970: TimeInterval($0) / 1000) }
+        }
     }
 
     let nativeDeviceId: String
@@ -25,6 +33,7 @@ struct SaunaSessionPayload: Codable {
     let currentTempF: Int?
     let targetTempF: Int?
     let remainingMinutes: Int?
+    let endsAtMillis: Int64?
     let heatOn: Bool?
     let active: Bool?
     let updatedAtMillis: Int64?
@@ -37,10 +46,17 @@ struct SaunaSessionPayload: Codable {
             currentTempF: currentTempF,
             targetTempF: targetTempF,
             remainingMinutes: remainingMinutes,
+            endsAtMillis: endsAtMillis ?? Self.fallbackEndsAtMillis(remainingMinutes),
             heatOn: heatOn ?? false,
             active: active ?? false,
             updatedAtMillis: updatedAtMillis ?? Self.nowMillis
         )
+    }
+
+    /// Older web payloads only carry remainingMinutes — derive an end date so
+    /// the countdown still works.
+    private static func fallbackEndsAtMillis(_ remainingMinutes: Int?) -> Int64? {
+        remainingMinutes.map { nowMillis + Int64($0) * 60_000 }
     }
 
     private static var nowMillis: Int64 {
@@ -58,11 +74,16 @@ struct LiveActivityTokenPayload: Codable {
     let bookingId: Int?
     let token: String
     let state: String?
+    /// Build env ("sandbox" | "production") rides along on every token upload
+    /// so the server's per-device APNs host can never go stale — a wrong host
+    /// means BadDeviceToken and the server dropping the token (frozen LA).
+    let environment: String
     let updatedAtMillis: Int64
 }
 
 struct PushToStartTokenPayload: Codable {
     let token: String
+    let environment: String
     let updatedAtMillis: Int64
 }
 
