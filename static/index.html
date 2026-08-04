@@ -741,7 +741,7 @@ function TempStepper({ valueF, onChangeF, minF = 140, maxF = 230, disabled = fal
 function HomePanel({
   status, statusUpdatedAt, bookings, members, presets, currentMember, onRefresh, onBook,
   toast, tempF, setTempF, duration, setDuration, manuallySet, setManuallySet,
-  saunaStarting, onSaunaStarting,
+  saunaStarting, onSaunaStarting, startFailure, onDismissStartFailure,
   onOpenSchedule, onOpenMore, onSlotClick, onEmptyClick, onPreheat, onJoin, loadingBookings,
 }) {
   const { fmtF } = useTempUnit();
@@ -815,6 +815,7 @@ function HomePanel({
 
   async function handlePrimary() {
     setBusy(true);
+    onDismissStartFailure?.();
     try {
       if (saunaOn || saunaStarting) {
         // While starting, "Turn off" cancels the pending activation server-side.
@@ -852,7 +853,11 @@ function HomePanel({
           targetTempF: cToF(tempToUse),
           remainingMinutes: durationToUse,
           endsAtMillis: endsAtFromMinutes(durationToUse),
-          heatOn: true,
+          // heatOn stays false until the device confirms it — the widget shows
+          // a power glyph instead of a flame, so the Lock Screen never claims
+          // the heater is running before the server has verified it. The 60s
+          // update push flips it once reported.active lands.
+          heatOn: false,
           active: true,
           updatedAtMillis: Date.now(),
         });
@@ -913,9 +918,10 @@ function HomePanel({
         <div className="absolute -right-10 -top-14 h-40 w-40 rounded-full bg-orange-500/25 blur-3xl" />
         <div className="relative flex items-start justify-between gap-3">
           <div>
-            <p className={`text-xs font-black uppercase tracking-wider text-orange-300 ${!saunaOn && saunaStarting ? 'pulse' : ''}`}>
+            <p className={`text-xs font-black uppercase tracking-wider ${!saunaOn && !saunaStarting && startFailure ? 'text-red-400' : 'text-orange-300'} ${!saunaOn && saunaStarting ? 'pulse' : ''}`}>
               {saunaOn ? (activeBooking?.status === 'active' ? 'Sauna is on' : 'Sauna is heating')
-                : saunaStarting ? 'Sauna is starting…' : 'Ready when you are'}
+                : saunaStarting ? 'Sauna is starting…'
+                : startFailure ? 'Sauna did not start' : 'Ready when you are'}
             </p>
             <div className="mt-2 text-6xl font-black leading-none tracking-tight">
               {fmtF(currentTempF)}
@@ -947,6 +953,18 @@ function HomePanel({
             <div className="mt-1 text-[11px] font-semibold text-gray-500">Session</div>
           </div>
         </div>
+
+        {!saunaOn && !saunaStarting && startFailure && (
+          <div className="relative mt-5 flex items-start gap-3 rounded-2xl border border-red-500/40 bg-red-500/10 p-4">
+            <span className="text-lg leading-none">⚠️</span>
+            <div className="flex-1">
+              <p className="text-sm font-bold text-red-200">The sauna never confirmed it switched on</p>
+              <p className="mt-1 text-xs text-red-200/80">{startFailure}</p>
+            </div>
+            <button onClick={onDismissStartFailure}
+              className="rounded-lg px-2 py-1 text-xs font-bold text-red-200/70 hover:bg-white/10">✕</button>
+          </div>
+        )}
 
         {!saunaOn && !saunaStarting && currentMember?.is_admin && (
           <div className="relative mt-5 space-y-4 rounded-2xl border border-white/10 bg-black/25 p-4">
@@ -3872,21 +3890,46 @@ function MainApp({ currentMember, onLogout, initialBookingId }) {
   // Optimistic "sauna is starting" state: the server responds to start
   // commands as soon as the state change is staged, ~20-45s before the device
   // actually activates. While starting we show a pending state and poll live
-  // status until active=1 is confirmed (or give up after ~75s).
+  // status until active=1 is confirmed.
+  //
+  // The optimism has to be undone when it turns out to be wrong: the server
+  // verifies the activate against the device and publishes `startFailure` on
+  // status when it never took, so a start that Harvia silently dropped surfaces
+  // here as an error instead of a session that looks fine but is stone cold.
   const [saunaStarting, setSaunaStarting] = useState(false);
+  const [startFailure, setStartFailure] = useState(null);
   useEffect(() => {
     if (status?.active === 1 && saunaStarting) setSaunaStarting(false);
-  }, [status?.active, saunaStarting]);
+    if (status?.active === 1 && startFailure) setStartFailure(null);
+  }, [status?.active, saunaStarting, startFailure]);
+
+  // React to the server's marker wherever the status came from — the confirm
+  // poll, a manual refresh, or a fresh load after the app was backgrounded.
+  const seenStartFailureAt = useRef(null);
+  useEffect(() => {
+    const f = status?.startFailure;
+    if (!f || seenStartFailureAt.current === f.at) return;
+    seenStartFailureAt.current = f.at;
+    setSaunaStarting(false);
+    setStartFailure(f.message);
+    NativeBridge.endSaunaSession({ bookingId: null, reason: 'start-failed', updatedAtMillis: Date.now() });
+    toast(f.message, 'error');
+    loadBookings();
+  }, [status?.startFailure?.at]);
+
   useEffect(() => {
     if (!saunaStarting) return;
     let cancelled = false;
     (async () => {
-      // Checks at roughly +10s, +25s, +40s, +55s, +75s after start.
-      for (const delay of [10000, 15000, 15000, 15000, 20000]) {
+      // Checks at roughly +10s, +25s, +40s, +55s, +75s, +100s, +130s, +160s.
+      // The server's activate is verified and retried once, so a confirmed
+      // failure can take ~105s to land — keep watching past that.
+      for (const delay of [10000, 15000, 15000, 15000, 20000, 25000, 30000, 30000]) {
         await new Promise(r => setTimeout(r, delay));
         if (cancelled) return;
         const s = await loadStatus();
-        if (cancelled || s?.active === 1) return; // clear handled by the effect above
+        // active=1 and startFailure are both handled by the effects above.
+        if (cancelled || s?.active === 1 || s?.startFailure) return;
       }
       if (!cancelled) {
         setSaunaStarting(false);
@@ -4382,6 +4425,8 @@ function MainApp({ currentMember, onLogout, initialBookingId }) {
             setManuallySet={setCtrlManuallySet}
             saunaStarting={saunaStarting}
             onSaunaStarting={setSaunaStarting}
+            startFailure={startFailure}
+            onDismissStartFailure={() => setStartFailure(null)}
             onOpenSchedule={() => setTab('schedule')}
             onOpenMore={() => setTab('settings')}
             onSlotClick={setSelectedSlot}

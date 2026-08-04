@@ -24,7 +24,7 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import selectinload
 from sqlalchemy.types import Integer as _SAInteger, Date as _SADate, Time as _SATime, Boolean as _SABoolean
 
-from harvia_client import HarviaClient
+from harvia_client import HarviaClient, SaunaOffline, SaunaStartUnconfirmed
 from models import (
     DB_PATH,
     Booking,
@@ -155,6 +155,35 @@ def _activation_still_current(gen: int) -> bool:
 def _cancel_pending_activations() -> None:
     """Invalidate any in-flight background activation (called on turn-off)."""
     _next_activation_generation()
+
+
+# A start that the device never confirmed.  Surfaced on /api/sauna/status so a
+# client that optimistically showed "starting…" learns it didn't take, even if
+# the push notification is missed or notifications are off.
+_START_FAILURE_TTL = 15 * 60
+_start_failure_lock = threading.Lock()
+_start_failure: dict | None = None
+
+
+def _record_start_failure(message: str, context: str) -> None:
+    global _start_failure
+    with _start_failure_lock:
+        _start_failure = {"at": _time.time(), "message": message, "context": context}
+
+
+def _clear_start_failure() -> None:
+    global _start_failure
+    with _start_failure_lock:
+        _start_failure = None
+
+
+def _get_start_failure() -> dict | None:
+    with _start_failure_lock:
+        if not _start_failure:
+            return None
+        if _time.time() - _start_failure["at"] > _START_FAILURE_TTL:
+            return None
+        return dict(_start_failure)
 
 
 def _get_client_ip() -> str:
@@ -593,12 +622,18 @@ def _dispatch_alert_to_member(db, member_id: int, payload: dict) -> dict:
     return result
 
 
-def _notify_admins(payload: dict, pref_key: str | None = None) -> None:
-    """Alert every admin. Prefers APNS per-member; falls back to Web Push."""
+def _notify_admins(payload: dict, pref_key: str | None = None,
+                   exclude_member_id: int | None = None) -> None:
+    """Alert every admin. Prefers APNS per-member; falls back to Web Push.
+
+    exclude_member_id skips one admin — used when they already got the same
+    alert as the acting member and shouldn't be buzzed twice."""
     try:
         with SessionLocal() as db:
             admins = db.query(FamilyMember).filter_by(is_admin=1, status="approved").all()
             for admin in admins:
+                if exclude_member_id is not None and admin.id == exclude_member_id:
+                    continue
                 if pref_key is not None:
                     prefs = admin.get_notification_prefs()
                     if not prefs.get(pref_key, True):
@@ -1228,6 +1263,8 @@ def _safe_turn_off(reason: str = "") -> bool:
     # Abort any staged-but-not-yet-activated start so a background activation
     # can't re-ignite the sauna after this off.
     _cancel_pending_activations()
+    # A deliberate off resolves any outstanding "didn't start" warning.
+    _clear_start_failure()
     client = get_harvia()
     for attempt in (1, 2):
         try:
@@ -2206,14 +2243,28 @@ def sauna_status():
     if request.args.get("cached") == "1":
         cached, _age = _get_cached_status()
         if cached is not None:
-            return jsonify(status_with_f(cached))
+            return jsonify(_status_with_start_failure(cached))
     try:
         status = get_harvia().get_full_status()
         _store_status_cache(status)
-        return jsonify(status_with_f(status))
+        return jsonify(_status_with_start_failure(status))
     except Exception as exc:
         logger.error("Status fetch failed: %s", exc)
         return err(str(exc), 502)
+
+
+def _status_with_start_failure(status: dict) -> dict:
+    """Status payload plus a recent unconfirmed-start marker, so a client that
+    optimistically rendered "starting…" can correct itself without relying on
+    the push notification landing."""
+    out = status_with_f(status)
+    failure = _get_start_failure()
+    if failure and not out.get("active"):
+        out["startFailure"] = {
+            "message": failure["message"],
+            "at": int(failure["at"] * 1000),
+        }
+    return out
 
 
 # Heating-rate model (deliberately simple): median °C/min across recent heating
@@ -2468,6 +2519,44 @@ def _auto_create_booking(member_id: int, member_name: str, target_c: int, on_tim
         return None
 
 
+def _abandon_failed_start_booking(booking_id: int | None, reason: str) -> None:
+    """Undo the optimistic session state after an unconfirmed start.
+
+    Cancels the booking (it only exists because we assumed the heater lit) and
+    ends any Live Activity showing it, so the Lock Screen stops counting down a
+    session that never began.  Never raises — it runs on the activation thread.
+    """
+    if booking_id is None:
+        return
+    try:
+        with SessionLocal() as db:
+            booking = db.query(Booking).filter_by(id=booking_id).first()
+            if booking and booking.status in ("scheduled", "preheating", "active"):
+                booking.status = "cancelled"
+                db.commit()
+                logger.warning("Cancelled booking #%d — sauna never confirmed it started (%s)",
+                               booking_id, reason)
+    except Exception as exc:
+        logger.error("Could not cancel booking #%s after a failed start: %s", booking_id, exc)
+    _fanout_live_activity_end(booking_id, reason="start-failed")
+
+
+def _revert_failed_preheat(booking_id: int, reason: str) -> None:
+    """Preheat variant: the booking is real and still upcoming, so put it back
+    to `scheduled` (preheat can be retried) rather than cancelling it."""
+    try:
+        with SessionLocal() as db:
+            booking = db.query(Booking).filter_by(id=booking_id).first()
+            if booking and booking.status == "preheating":
+                booking.status = "scheduled"
+                db.commit()
+                logger.warning("Reverted booking #%d to scheduled — preheat never confirmed (%s)",
+                               booking_id, reason)
+    except Exception as exc:
+        logger.error("Could not revert booking #%s after a failed preheat: %s", booking_id, exc)
+    _fanout_live_activity_end(booking_id, reason="start-failed")
+
+
 def _activate_sauna_async(
     target_c: int,
     device_minutes: int,
@@ -2475,17 +2564,48 @@ def _activate_sauna_async(
     context: str,
     failure_body: str,
     after_activate=None,
+    on_failure=None,
 ) -> None:
     """Finish a staged turn-on in the background (B1 — see the activation
     generation notes above).
 
     The endpoint has already run turn_on_stage(); this waits for the device to
-    commit onTime and sends active=1 off the request thread.  On failure the
-    initiating member gets a time-sensitive alert (the status poll is the
-    other signal).  `after_activate` runs post-activation work that should only
-    fire once the sauna is actually on (admin alerts, Live Activity fanout).
+    commit onTime, sends active=1 and *verifies* the device reports it, all off
+    the request thread.  `after_activate` runs post-activation work that should
+    only fire once the sauna is actually on (admin alerts, Live Activity
+    fanout).  `on_failure` unwinds the optimistic state the endpoint already
+    committed (booking status, Live Activity) when it isn't.
+
+    Everything downstream of a start is optimistic — the response, the booking
+    row, the Live Activity — so an unconfirmed activation MUST land here loudly:
+    time-sensitive alert to the member and the admins, a status flag for the
+    polling UI, and the caller's unwind.
     """
     gen = _next_activation_generation()
+
+    def fail(reason: str, detail: str) -> None:
+        if not _activation_still_current(gen):
+            # A turn-off (or a newer start) superseded us — the sauna being off
+            # is the intended outcome, not a failure worth alarming anyone over.
+            logger.info("Ignoring unconfirmed start (%s) — superseded: %s", context, detail)
+            return
+        logger.error("Sauna start NOT confirmed (%s): %s", context, detail)
+        _record_start_failure(reason, context)
+        if on_failure is not None:
+            try:
+                on_failure(reason)
+            except Exception as exc:
+                logger.error("Start-failure unwind failed (%s): %s", context, exc)
+        alert = {
+            "title": "⚠️ Sauna did not start",
+            "body": f"{failure_body} {reason}",
+            "tag": "sauna-start-failed",
+            "thread_id": "sauna-safety",
+            "interruption_level": "time-sensitive",
+            "url": "/",
+        }
+        _notify_member(member_id, alert)
+        _notify_admins(alert, pref_key="sauna_control", exclude_member_id=member_id)
 
     def run():
         try:
@@ -2493,20 +2613,22 @@ def _activate_sauna_async(
                 target_c, device_minutes,
                 should_activate=lambda: _activation_still_current(gen),
             )
+        except SaunaStartUnconfirmed as exc:
+            fail(str(exc), f"{type(exc).__name__}: {exc}")
+            return
+        except SaunaOffline as exc:
+            fail(str(exc), f"{type(exc).__name__}: {exc}")
+            return
         except Exception as exc:
-            logger.error("Background sauna activation failed (%s): %s", context, exc)
-            _notify_member(member_id, {
-                "title": "⚠️ Sauna may not have started",
-                "body": failure_body,
-                "tag": "sauna-start-failed",
-                "thread_id": "sauna-safety",
-                "interruption_level": "time-sensitive",
-                "url": "/",
-            })
+            fail(
+                "The sauna could not be reached to confirm it started.",
+                f"{type(exc).__name__}: {exc}",
+            )
             return
         if result is None:
             logger.info("Sauna activation cancelled (%s) — superseded by turn-off/newer start", context)
             return
+        _clear_start_failure()
         if after_activate is not None:
             try:
                 after_activate()
@@ -2551,10 +2673,14 @@ def sauna_on():
     try:
         logger.info("sauna/on → staging (target_c=%d °C / %d °F, on_time=%d min)", target_c, c_to_f(target_c), on_time)
         device_minutes = get_harvia().turn_on_stage(target_c, on_time)
+    except SaunaOffline as exc:
+        logger.warning("Turn on refused — device offline: %s", exc)
+        return err(str(exc), 503)
     except Exception as exc:
         logger.error("Turn on failed: %s", exc)
         return err(str(exc), 502)
 
+    _clear_start_failure()
     booking_id = _auto_create_booking(mid, mname, target_c, on_time)
     _log_sauna_action(mid, mname, "on", target_temp=target_c, on_time=on_time,
                       notes=json.dumps({"target_f": c_to_f(target_c)}))
@@ -2569,11 +2695,18 @@ def sauna_on():
             "url": "/",
         }, pref_key="sauna_control")
 
+    def _on_start_failed(reason: str):
+        # The booking exists only because we assumed the start worked; drop it
+        # and tear down any Live Activity the phone started optimistically, so
+        # nothing is left claiming a session is running.
+        _abandon_failed_start_booking(booking_id, reason)
+
     _activate_sauna_async(
         target_c, device_minutes, mid,
         context=f"sauna/on by {mname}",
-        failure_body="The start command could not be confirmed — check the sauna status.",
+        failure_body="The start command was accepted but the sauna never switched on.",
         after_activate=_after_on,
+        on_failure=_on_start_failed,
     )
     return jsonify({
         "ok": True,
@@ -2676,6 +2809,7 @@ def sauna_extend():
         get_harvia().turn_off()
         _time.sleep(1.5)
         device_minutes = get_harvia().turn_on_stage(target_temp, new_on_time)
+        _clear_start_failure()
         _activate_sauna_async(
             target_temp, device_minutes, mid,
             context=f"sauna/extend by {mname}",
@@ -2814,6 +2948,7 @@ def sauna_set():
             get_harvia().turn_off()
             _time.sleep(1.5)
             device_minutes = get_harvia().turn_on_stage(target_temp, on_time)
+            _clear_start_failure()
             _activate_sauna_async(
                 target_temp, device_minutes, mid,
                 context=f"sauna/set by {mname}",
@@ -3737,10 +3872,14 @@ def preheat_booking(booking_id: int):
         # background — turn_on's commit-wait takes 20-45s, past the client timeout.
         try:
             device_minutes = get_harvia().turn_on_stage(b_temp, b_time)
+        except SaunaOffline as exc:
+            logger.warning("Preheat refused — device offline: %s", exc)
+            return err(str(exc), 503)
         except Exception as exc:
             logger.error("Preheat API call failed: %s", exc)
             return err(f"Harvia API error: {exc}", 502)
 
+        _clear_start_failure()
         booking.status = "preheating"
         db.commit()
         booking_id = booking.id
@@ -3758,8 +3897,9 @@ def preheat_booking(booking_id: int):
         _activate_sauna_async(
             b_temp, device_minutes, mid,
             context=f"preheat booking #{booking_id} by {mname}",
-            failure_body="Preheat could not be confirmed — check the sauna status.",
+            failure_body="Preheat was accepted but the sauna never switched on.",
             after_activate=_after_preheat,
+            on_failure=lambda reason: _revert_failed_preheat(booking_id, reason),
         )
         return jsonify({"ok": True, "pending": True, "status": "preheating"})
     finally:

@@ -27,7 +27,31 @@ TOKEN_REFRESH_INTERVAL = 30 * 60  # refresh every 30 min — tokens expire at ~6
 _CALL_LOG_MAX = 100
 
 
+class SaunaOffline(RuntimeError):
+    """The heater is not connected to the Harvia cloud.
+
+    Mutations still succeed against the API in this state — the cloud accepts
+    the desired-state write and nobody ever picks it up — so a start looks
+    fine and the sauna stays cold.  Detected up front so the caller can fail
+    the request instead of reporting a phantom success.
+    """
+
+
+class SaunaStartUnconfirmed(RuntimeError):
+    """active=1 was sent (twice) but the device never reported active.
+
+    Same failure shape as SaunaOffline but caught after the fact: assume the
+    heater is NOT running.
+    """
+
+
 class HarviaClient:
+    # How long to wait for reported.active to flip to 1 after sending activate,
+    # and how often to poll while waiting.  Two attempts at this budget plus the
+    # 45s onTime commit-wait bounds a background activation at ~105s.
+    ACTIVATE_CONFIRM_TIMEOUT = 30
+    ACTIVATE_POLL_INTERVAL = 4
+
     def __init__(self, username: str, password: str, device_id: str):
         self.username = username
         self.password = password
@@ -223,18 +247,69 @@ class HarviaClient:
         hours = math.ceil(max(1, int(requested_minutes)) / 60)
         return max(60, min(120, hours * 60))
 
+    def _reported(self) -> dict:
+        return self.get_device_state().get("reported") or {}
+
     def _reported_on_time(self):
         try:
-            return self.get_device_state()["reported"].get("onTime")
+            return self._reported().get("onTime")
         except Exception as exc:
             logger.warning("Could not read reported onTime: %s", exc)
             return None
 
-    def turn_on_stage(self, target_temp_c: int, on_time_minutes: int) -> int:
+    def assert_online(self) -> None:
+        """Raise SaunaOffline if the device isn't talking to the cloud.
+
+        A set_state mutation is accepted whether or not the heater is
+        reachable, so this is the only pre-flight signal that a start command
+        will actually land.  An unreadable state is *not* treated as offline —
+        the post-activate confirmation is the backstop for that.
+        """
+        try:
+            reported = self._reported()
+        except Exception as exc:
+            logger.warning("Could not read device state for the online check: %s", exc)
+            return
+        if not reported.get("online"):
+            raise SaunaOffline(
+                "The sauna is offline — it isn't connected to Harvia's cloud right now."
+            )
+
+    def _wait_for_active(self, timeout: float) -> bool:
+        """Poll reported.active until it flips to 1.  Returns False on timeout.
+
+        Raises SaunaOffline if the device drops off the cloud while we wait —
+        retrying the activate against an unreachable heater is pointless, and
+        the caller wants to tell the user *why* it didn't start.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                reported = self._reported()
+            except Exception as exc:
+                logger.warning("active-confirm poll failed: %s", exc)
+                reported = {}
+            if reported.get("active"):
+                return True
+            if reported.get("online") is False:
+                raise SaunaOffline(
+                    "The sauna dropped off Harvia's cloud before it switched on."
+                )
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(self.ACTIVATE_POLL_INTERVAL)
+
+    def turn_on_stage(self, target_temp_c: int, on_time_minutes: int,
+                      require_online: bool = True) -> int:
         """Step 1 of turn-on: stage the rounded onTime (+ targetTemp) while the
-        sauna is still off.  One fast API call — safe to run in the request
-        path, and doubles as a reachability check.  Returns the staged device
-        minutes to pass to turn_on_activate()."""
+        sauna is still off.  Safe to run in the request path, and doubles as a
+        reachability check.  Returns the staged device minutes to pass to
+        turn_on_activate().
+
+        Raises SaunaOffline when the device isn't connected — better a 503 the
+        user can see than a start that silently never happens."""
+        if require_online:
+            self.assert_online()
         device_minutes = self.device_on_time(on_time_minutes)
         self.set_state({"onTime": device_minutes, "targetTemp": target_temp_c})
         return device_minutes
@@ -252,6 +327,11 @@ class HarviaClient:
         active=1: if it returns False the activation is abandoned and None is
         returned.  This lets a turn-off issued while we were waiting cancel the
         pending activation instead of re-igniting the sauna afterwards.
+
+        The activate is then *verified* against reported.active and retried
+        once — set_state succeeding only means the cloud took the write, not
+        that the heater lit.  Raises SaunaStartUnconfirmed if it never does,
+        so the caller can undo its optimistic "session started" state.
         """
         # Wait for reported.onTime to commit so the activation latches it.
         deadline = time.monotonic() + 45
@@ -266,14 +346,32 @@ class HarviaClient:
                 "onTime did not commit to %d within 45s — activating anyway; "
                 "session length may be wrong this cycle", device_minutes)
 
+        for attempt in (1, 2):
+            if should_activate is not None and not should_activate():
+                logger.info("turn_on: activation aborted — superseded by a turn-off or newer start")
+                return None
+
+            # Activate. reported.onTime is committed, so the device uses it.
+            logger.info("turn_on: device onTime=%d min, committed=%s — activating (attempt %d)",
+                        device_minutes, committed, attempt)
+            result = self.set_state({"active": 1, "targetTemp": target_temp_c})
+
+            if self._wait_for_active(self.ACTIVATE_CONFIRM_TIMEOUT):
+                logger.info("turn_on: device confirmed active=1 (attempt %d)", attempt)
+                return result
+            logger.warning(
+                "turn_on: device did not report active=1 within %ds (attempt %d)",
+                self.ACTIVATE_CONFIRM_TIMEOUT, attempt)
+
+        # A turn-off during the confirm wait is a cancellation, not a failure.
         if should_activate is not None and not should_activate():
-            logger.info("turn_on: activation aborted — superseded by a turn-off or newer start")
+            logger.info("turn_on: unconfirmed start superseded by a turn-off — treating as cancelled")
             return None
 
-        # Activate. reported.onTime is committed, so the device uses it.
-        logger.info("turn_on: device onTime=%d min, committed=%s — activating",
-                    device_minutes, committed)
-        return self.set_state({"active": 1, "targetTemp": target_temp_c})
+        raise SaunaStartUnconfirmed(
+            "The sauna accepted the start command but never reported that it "
+            "switched on — the heater is probably still off."
+        )
 
     def turn_on(self, target_temp_c: int, on_time_minutes: int) -> dict | None:
         """Turn the sauna on for ~on_time_minutes (synchronous stage + activate).

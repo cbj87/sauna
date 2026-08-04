@@ -31,10 +31,14 @@ struct SweatBoxLiveActivityWidget: Widget {
                 DynamicIslandExpandedRegion(.trailing) {
                     VStack(alignment: .trailing, spacing: 3) {
                         RemainingView(state: context.state, alignment: .trailing)
-                            .font(.title3.weight(.heavy))
+                            .font(.system(size: 19, weight: .heavy, design: .rounded))
+                            .monospacedDigit()
                             .foregroundStyle(heatGradient)
                             .lineLimit(1)
-                            .minimumScaleFactor(0.75)
+                            // Room to shrink rather than truncate — an hour-plus
+                            // countdown is 7 glyphs, not 5.
+                            .minimumScaleFactor(0.55)
+                            .allowsTightening(true)
                         Text("Remaining")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
@@ -75,10 +79,10 @@ private struct LockScreenLiveActivityView: View {
     let state: SaunaActivityAttributes.ContentState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .center) {
                 Text(state.bookingName)
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.94))
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
@@ -87,23 +91,30 @@ private struct LockScreenLiveActivityView: View {
                 Spacer()
 
                 Image(systemName: state.heatOn ? "flame.fill" : "power")
-                    .font(.system(size: 20, weight: .bold))
+                    .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(state.heatOn ? heatGradient : LinearGradient(colors: [.white.opacity(0.5)], startPoint: .top, endPoint: .bottom))
                     .shadow(color: state.heatOn ? ember.opacity(0.7) : .clear, radius: 10)
             }
 
-            HStack(alignment: .center, spacing: 16) {
+            // The countdown is sized to its content and takes layout priority,
+            // so it claims the width it needs before the two temp columns split
+            // the remainder. An equal three-way split truncates the moment the
+            // timer rolls past an hour and needs "1:12:34" instead of "12:34".
+            // Note the timer column deliberately has no maxWidth: .infinity —
+            // greedy *and* high-priority would starve the temps entirely.
+            HStack(alignment: .center, spacing: 8) {
                 MetricView(title: "Current", value: temperatureText(state.currentTempF), alignment: .center)
                     .frame(maxWidth: .infinity)
 
                 DividerLine()
 
-                VStack(spacing: 0) {
+                VStack(spacing: 1) {
                     RemainingView(state: state, alignment: .center)
-                        .font(.system(size: 45, weight: .heavy, design: .rounded))
+                        .font(.system(size: 34, weight: .heavy, design: .rounded))
+                        .monospacedDigit()
                         .foregroundStyle(heatGradient)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.6)
+                        .minimumScaleFactor(0.5)
                         .allowsTightening(true)
                         .shadow(color: ember.opacity(0.38), radius: 10)
                     Text("Remaining")
@@ -113,7 +124,7 @@ private struct LockScreenLiveActivityView: View {
                         .minimumScaleFactor(0.7)
                         .allowsTightening(true)
                 }
-                .frame(maxWidth: .infinity, minHeight: 58)
+                .layoutPriority(1)
 
                 DividerLine()
 
@@ -124,9 +135,9 @@ private struct LockScreenLiveActivityView: View {
             ProgressBar(progress: heatingProgress(state))
                 .frame(height: 5)
         }
-        .padding(.horizontal, 30)
-        .padding(.top, 16)
-        .padding(.bottom, 12)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
         .foregroundStyle(.white)
         .containerBackground(for: .widget) {
             ZStack {
@@ -196,11 +207,12 @@ private struct MetricView: View {
     let alignment: HorizontalAlignment
 
     var body: some View {
-        VStack(alignment: alignment, spacing: 4) {
+        VStack(alignment: alignment, spacing: 1) {
             Text(value)
-                .font(.system(size: 26, weight: .bold, design: .rounded))
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .monospacedDigit()
                 .lineLimit(1)
-                .minimumScaleFactor(0.55)
+                .minimumScaleFactor(0.5)
                 .allowsTightening(true)
             Text(title)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -214,7 +226,7 @@ private struct DividerLine: View {
     var body: some View {
         Rectangle()
             .fill(.white.opacity(0.18))
-            .frame(width: 1, height: 42)
+            .frame(width: 1, height: 46)
     }
 }
 
@@ -261,9 +273,14 @@ private func heatingProgress(_ state: SaunaActivityAttributes.ContentState) -> D
     return min(1, max(0.04, Double(currentTempF) / Double(targetTempF)))
 }
 
+/// Static fallback for ended sessions and pre-endDate payloads. Splits out
+/// hours so a long session doesn't read as an unhelpful "112m".
 private func remainingText(_ state: SaunaActivityAttributes.ContentState) -> String {
     guard let remainingMinutes = state.remainingMinutes else { return "--" }
-    return "\(max(0, remainingMinutes))m"
+    let mins = max(0, remainingMinutes)
+    if mins < 60 { return "\(mins)m" }
+    let (h, m) = (mins / 60, mins % 60)
+    return m == 0 ? "\(h)h" : "\(h)h \(m)m"
 }
 
 private func compactText(_ state: SaunaActivityAttributes.ContentState) -> String {
