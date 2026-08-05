@@ -3454,6 +3454,13 @@ def delete_native_live_activity_token():
 
 @app.route("/api/native/live-session")
 def native_live_session():
+    """The Live Activity content-state for the caller's current session.
+
+    Lets the app start an activity *on this device* through ActivityKit
+    directly, instead of going out to APNs and back. Reads the cached device
+    status (populated by the 60s job) so the activity opens with real temps
+    rather than placeholders — no Harvia call on this path.
+    """
     db, member, error = require_auth()
     if error:
         return error
@@ -3463,7 +3470,9 @@ def native_live_session():
             booking = _current_live_booking(db)
         if not booking:
             return jsonify({"session": None})
-        return jsonify({"session": _live_activity_payload_for_booking(booking)})
+        cached, _age = _get_cached_status()
+        status = status_with_f(cached) if cached else None
+        return jsonify({"session": _live_activity_payload_for_booking(booking, status)})
     finally:
         db.close()
 
@@ -3518,43 +3527,15 @@ def admin_test_live_activity_push():
         db.close()
 
 
-@app.route("/api/admin/native/live-activity/start-current", methods=["POST"])
-def admin_start_current_live_activity():
-    db, member, error = require_admin()
-    if error:
-        return error
-    try:
-        body = request.get_json(silent=True) or {}
-        exclude_native_device_id = (
-            body.get("nativeDeviceId") or body.get("native_device_id") or ""
-        ).strip() or None
-        booking = _current_live_booking(db, member) or _current_live_booking(db)
-        if not booking:
-            return err("No active or preheating booking found", 404)
-        booking_id = booking.id
-    finally:
-        db.close()
-
-    status = None
-    if harvia:
-        try:
-            status = status_with_f(harvia.get_full_status())
-        except Exception as exc:
-            logger.warning("Manual Live Activity start: Harvia status fetch failed: %s", exc)
-
-    result = _fanout_live_activity_start(
-        booking_id,
-        exclude_native_device_id=exclude_native_device_id,
-        status=status,
-    )
-    if result.get("sent", 0) <= 0:
-        return jsonify({
-            "ok": False,
-            "bookingId": booking_id,
-            "reason": result.get("skipped") or "No Live Activity start pushes sent",
-            **result,
-        })
-    return jsonify({"ok": True, "bookingId": booking_id, **result})
+# The manual "start current session Live Activity" admin endpoint was removed.
+# It could only express "remote-start on every eligible device except this one"
+# (exclude_native_device_id) — the semantics /api/sauna/on needs, because the
+# starting phone has already created its own activity locally. Driving a manual
+# button through it meant pushing to everyone else and never to yourself, while
+# reporting APNs 200s as "sent to N devices". The button now starts the activity
+# on its own device via ActivityKit (GET /api/native/live-session +
+# NativeBridge.startSaunaSession). Remote fanout remains where it belongs:
+# _fanout_live_activity_start(), called after a *confirmed* sauna start.
 
 
 # ---------------------------------------------------------------------------

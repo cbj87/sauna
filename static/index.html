@@ -3422,19 +3422,28 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
     finally { setBusy(false); }
   }
 
+  // Starts the activity on THIS device, through ActivityKit, the same local
+  // path /api/sauna/on uses. Deliberately not a push: a remote start goes to
+  // every eligible device, and APNs returning 200 only means it accepted the
+  // push — iOS can still drop it with no feedback, which is why the old
+  // "sent to N devices" message could be true while nothing ever appeared.
   async function startCurrentLiveActivities() {
     setBusy(true);
     setLiveActivityMessage('');
     try {
-      const res = await api('/api/admin/native/live-activity/start-current', {
-        method: 'POST',
-      });
-      if (res.ok) {
-        setLiveActivityMessage(`Sent to ${res.sent} device${res.sent === 1 ? '' : 's'} (${res.tokens} eligible token${res.tokens === 1 ? '' : 's'}).`);
-      } else {
-        const apns = res.last_error ? ` APNs: ${res.last_error.status || 'n/a'} ${res.last_error.body || ''}` : '';
-        setLiveActivityMessage(`Not sent: ${res.reason || 'unknown'} (${res.tokens || 0} eligible token${res.tokens === 1 ? '' : 's'}).${apns}`);
+      if (!NativeBridge.isNative) {
+        setLiveActivityMessage('Open Sweat Box as an app on this device — Live Activities can’t be started from a browser tab.');
+        return;
       }
+      const { session } = await api('/api/native/live-session');
+      if (!session) {
+        setLiveActivityMessage('No session is running right now, so there’s nothing to show.');
+        return;
+      }
+      const posted = NativeBridge.startSaunaSession({ ...session, updatedAtMillis: Date.now() });
+      setLiveActivityMessage(posted
+        ? 'Started on this device — check your Lock Screen.'
+        : 'Couldn’t reach the app’s Live Activity bridge. Force-quit Sweat Box, reopen it, and try again.');
     }
     catch(e) { setLiveActivityMessage(e.message); }
     finally { setBusy(false); }
@@ -3481,8 +3490,9 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
         </div>
         <button onClick={startCurrentLiveActivities} disabled={busy}
           className="w-full py-3 rounded-xl font-bold text-white bg-orange-500 hover:bg-orange-400 disabled:opacity-50">
-          Start current session Live Activity
+          Show current session on this device
         </button>
+        <p className="mt-2 text-center text-xs text-gray-500">Starts a Live Activity on this phone only — nobody else is affected.</p>
         {liveActivityMessage && <p className="mt-3 text-center text-xs text-gray-400">{liveActivityMessage}</p>}
       </div>
 
