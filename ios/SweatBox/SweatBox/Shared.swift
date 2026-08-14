@@ -9,8 +9,9 @@ struct SaunaActivityAttributes: ActivityAttributes {
         let currentTempF: Int?
         let targetTempF: Int?
         let remainingMinutes: Int?
-        /// Epoch millis when the session ends. Drives the widget's self-ticking
-        /// countdown so remaining time stays correct between (or without) pushes.
+        /// Epoch millis when the session ends. The widget recomputes its minute
+        /// readout from this on every redraw, so remaining time stays right
+        /// between pushes even though it no longer ticks on its own.
         /// Optional so pushes from older server builds still decode.
         let endsAtMillis: Int64?
         let heatOn: Bool

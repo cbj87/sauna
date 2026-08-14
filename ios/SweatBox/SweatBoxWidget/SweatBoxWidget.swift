@@ -35,8 +35,9 @@ struct SweatBoxLiveActivityWidget: Widget {
                             .monospacedDigit()
                             .foregroundStyle(heatGradient)
                             .lineLimit(1)
-                            // Room to shrink rather than truncate — an hour-plus
-                            // countdown is 7 glyphs, not 5.
+                            // Room to shrink rather than truncate: the expanded
+                            // trailing region is narrow and "120 min" is wider
+                            // than the two-digit common case.
                             .minimumScaleFactor(0.55)
                             .allowsTightening(true)
                         Text("Remaining")
@@ -96,12 +97,13 @@ private struct LockScreenLiveActivityView: View {
                     .shadow(color: state.heatOn ? ember.opacity(0.7) : .clear, radius: 10)
             }
 
-            // The countdown is sized to its content and takes layout priority,
-            // so it claims the width it needs before the two temp columns split
-            // the remainder. An equal three-way split truncates the moment the
-            // timer rolls past an hour and needs "1:12:34" instead of "12:34".
-            // Note the timer column deliberately has no maxWidth: .infinity —
-            // greedy *and* high-priority would starve the temps entirely.
+            // Three equal columns, no layout priority anywhere. A previous
+            // version gave the countdown .layoutPriority(1) to stop an
+            // hour-plus "1:12:34" truncating — but Text(timerInterval:) sizes
+            // itself for the widest value it can ever show, so greedy plus
+            // high-priority took the whole row and collapsed both temperature
+            // columns to zero width. The readout is now short minutes, which
+            // fits an even split; keep it that way.
             HStack(alignment: .center, spacing: 8) {
                 MetricView(title: "Current", value: temperatureText(state.currentTempF), alignment: .center)
                     .frame(maxWidth: .infinity)
@@ -110,7 +112,7 @@ private struct LockScreenLiveActivityView: View {
 
                 VStack(spacing: 1) {
                     RemainingView(state: state, alignment: .center)
-                        .font(.system(size: 34, weight: .heavy, design: .rounded))
+                        .font(.system(size: 32, weight: .heavy, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(heatGradient)
                         .lineLimit(1)
@@ -124,7 +126,7 @@ private struct LockScreenLiveActivityView: View {
                         .minimumScaleFactor(0.7)
                         .allowsTightening(true)
                 }
-                .layoutPriority(1)
+                .frame(maxWidth: .infinity)
 
                 DividerLine()
 
@@ -182,22 +184,21 @@ private struct LockScreenLiveActivityView: View {
     }
 }
 
-/// Remaining-time readout. When the state carries an end date, this renders a
-/// system countdown timer that ticks by itself — the Live Activity stays
-/// correct even when no update push arrives. Falls back to the static
-/// remainingMinutes for old payloads or ended sessions.
+/// Remaining-time readout, in whole minutes ("72 min").
+///
+/// This deliberately does not use `Text(timerInterval:)`: that renders MM:SS or
+/// H:MM:SS with no coarser option, and the wide H:MM:SS string is what starved
+/// the temperature columns out of the lock-screen row. The cost is that the
+/// readout no longer ticks on its own — it is only as fresh as the last update
+/// push — which is why the minute count is recomputed from `endDate` on every
+/// redraw rather than trusting the `remainingMinutes` the push carried.
 private struct RemainingView: View {
     let state: SaunaActivityAttributes.ContentState
     let alignment: TextAlignment
 
     var body: some View {
-        if let end = state.endDate, state.active, end > Date() {
-            Text(timerInterval: Date.now...end, countsDown: true)
-                .monospacedDigit()
-                .multilineTextAlignment(alignment)
-        } else {
-            Text(remainingText(state))
-        }
+        Text(remainingText(state))
+            .multilineTextAlignment(alignment)
     }
 }
 
@@ -273,17 +274,30 @@ private func heatingProgress(_ state: SaunaActivityAttributes.ContentState) -> D
     return min(1, max(0.04, Double(currentTempF) / Double(targetTempF)))
 }
 
-/// Static fallback for ended sessions and pre-endDate payloads. Splits out
-/// hours so a long session doesn't read as an unhelpful "112m".
+/// Whole minutes left. Derived from `endDate` when the payload carries one, so
+/// a redraw between update pushes still reads correctly; falls back to the
+/// pushed `remainingMinutes` for ended sessions and pre-endDate payloads.
+/// Rounds up, so the readout only reaches "0 min" once the session is over.
+private func remainingMinutes(_ state: SaunaActivityAttributes.ContentState) -> Int? {
+    if let end = state.endDate, state.active {
+        let mins = (end.timeIntervalSinceNow / 60).rounded(.up)
+        // Clamped before the Int conversion — a malformed date must not trap.
+        return Int(min(max(mins, 0), 24 * 60))
+    }
+    guard let pushed = state.remainingMinutes else { return nil }
+    return max(0, pushed)
+}
+
+/// Minutes never roll up into hours: "72 min" beats "1h 12m" at a glance, and
+/// the short string leaves the temperature columns their share of the row.
 private func remainingText(_ state: SaunaActivityAttributes.ContentState) -> String {
-    guard let remainingMinutes = state.remainingMinutes else { return "--" }
-    let mins = max(0, remainingMinutes)
-    if mins < 60 { return "\(mins)m" }
-    let (h, m) = (mins / 60, mins % 60)
-    return m == 0 ? "\(h)h" : "\(h)h \(m)m"
+    guard let mins = remainingMinutes(state) else { return "--" }
+    return "\(mins) min"
 }
 
 private func compactText(_ state: SaunaActivityAttributes.ContentState) -> String {
     let temp = temperatureText(state.currentTempF)
-    return "\(temp) · \(remainingText(state))"
+    // The compact pill is the tightest space in the app — "72m", not "72 min".
+    guard let mins = remainingMinutes(state) else { return "\(temp) · --" }
+    return "\(temp) · \(mins)m"
 }
