@@ -517,7 +517,11 @@ function TodaySessionList({ bookings, onOpenSchedule, onEmptyAction, emptyAction
   );
 }
 
-function SaunaTimer() {
+// ─── sauna countdown timer ────────────────────────────────────────────────────
+// The timer state lives in this hook rather than inside the card so the home
+// hero can render the live countdown beside the temperature — both stay visible
+// at the top of the page at once — while the card below keeps the controls.
+function useCountdownTimer() {
   const [expanded, setExpanded] = useState(false);
   const [timerEnd, setTimerEnd] = useState(null);
   const [remainingMs, setRemainingMs] = useState(0);
@@ -605,8 +609,22 @@ function SaunaTimer() {
 
   useEffect(() => () => { releaseWakeLock(); }, []);
 
+  return {
+    expanded, setExpanded, active, expired, paused, running, timeLabel,
+    selectedMinutes, customMinutes, setCustomMinutes, customOpen, setCustomOpen,
+    startTimer, stopTimer, pauseTimer, resumeTimer,
+  };
+}
+
+function SaunaTimer({ timer }) {
+  const {
+    expanded, setExpanded, active, expired, paused, timeLabel, selectedMinutes,
+    customMinutes, setCustomMinutes, customOpen, setCustomOpen,
+    startTimer, stopTimer, pauseTimer, resumeTimer,
+  } = timer;
+
   return (
-    <section className={`overflow-hidden rounded-2xl border transition-colors ${expired ? 'border-red-400/80 bg-red-950/60' : active ? 'border-orange-500/60 bg-black' : 'border-white/10 bg-gray-800/80'}`}>
+    <section id="sauna-timer" className={`overflow-hidden rounded-2xl border transition-colors ${expired ? 'border-red-400/80 bg-red-950/60' : active ? 'border-orange-500/60 bg-black' : 'border-white/10 bg-gray-800/80'}`}>
       <button onClick={() => !active && setExpanded(v => !v)}
         className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
         <div>
@@ -745,6 +763,7 @@ function HomePanel({
   onOpenSchedule, onOpenMore, onSlotClick, onEmptyClick, onPreheat, onJoin, loadingBookings,
 }) {
   const { fmtF } = useTempUnit();
+  const timer = useCountdownTimer();
   const [busy, setBusy] = useState(false);
   // Mid-session target: seeded once from the live target when the sauna is on,
   // then user-controlled until the next off (which resets it back to null).
@@ -897,6 +916,14 @@ function HomePanel({
 
   // Change the target temperature of a running sauna without an off→on cycle.
   // Temp-only /api/sauna/set goes straight through set_state on the device.
+  // Hero countdown is display-only — send taps down to the timer card's controls.
+  function focusTimer() {
+    timer.setExpanded(true);
+    requestAnimationFrame(() => {
+      document.getElementById('sauna-timer')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  }
+
   async function handleSetTemp() {
     if (midTempF == null) return;
     setBusy(true);
@@ -917,24 +944,39 @@ function HomePanel({
       <section className="relative overflow-hidden rounded-[1.75rem] border border-orange-500/20 bg-gradient-to-br from-stone-950 via-gray-900 to-black p-5 shadow-2xl">
         <div className="absolute -right-10 -top-14 h-40 w-40 rounded-full bg-orange-500/25 blur-3xl" />
         <div className="relative flex items-start justify-between gap-3">
-          <div>
+          <div className="min-w-0">
             <p className={`text-xs font-black uppercase tracking-wider ${!saunaOn && !saunaStarting && startFailure ? 'text-red-400' : 'text-orange-300'} ${!saunaOn && saunaStarting ? 'pulse' : ''}`}>
               {saunaOn ? (activeBooking?.status === 'active' ? 'Sauna is on' : 'Sauna is heating')
                 : saunaStarting ? 'Sauna is starting…'
                 : startFailure ? 'Sauna did not start' : 'Ready when you are'}
             </p>
-            <div className="mt-2 text-6xl font-black leading-none tracking-tight">
+            <div className={`mt-2 font-black leading-none tracking-tight ${timer.active ? 'text-5xl' : 'text-6xl'}`}>
               {fmtF(currentTempF)}
             </div>
             {heatingToTarget && heatEst && (
               <p className="mt-1 text-sm font-bold text-orange-300">~{heatEst.minutes_to_target} min to {fmtF(targetTempF)}</p>
             )}
-            <p className="mt-2 text-sm text-gray-400">{updatedLabel} · tap refresh for live status</p>
+            <p className="mt-2 text-sm text-gray-400">{updatedLabel}{timer.active ? '' : ' · tap refresh for live status'}</p>
           </div>
-          <button onClick={onRefresh} disabled={busy}
-            className="rounded-2xl bg-white/10 px-3 py-2 text-xs font-bold text-gray-200 hover:bg-white/15 disabled:opacity-50">
-            ↻
-          </button>
+          <div className="flex shrink-0 flex-col items-end gap-2">
+            <button onClick={onRefresh} disabled={busy}
+              className="rounded-2xl bg-white/10 px-3 py-2 text-xs font-bold text-gray-200 hover:bg-white/15 disabled:opacity-50">
+              ↻
+            </button>
+            {/* Live countdown mirrored up here so the timer and the temperature
+                are both readable without scrolling; tap jumps to the controls. */}
+            {timer.active && (
+              <button onClick={focusTimer}
+                className={`min-w-[6.5rem] rounded-2xl border px-3 py-2 text-center transition-colors ${timer.expired ? 'border-red-400/70 bg-red-500/15 hover:bg-red-500/25' : 'border-orange-500/40 bg-orange-500/10 hover:bg-orange-500/20'}`}>
+                <div className={`whitespace-nowrap font-mono text-2xl font-black leading-none ${timer.expired ? 'text-red-200' : 'text-orange-300'}`}>
+                  {timer.timeLabel}
+                </div>
+                <div className="mt-1 text-[10px] font-black uppercase tracking-wide text-gray-400">
+                  {timer.paused ? 'paused' : timer.expired ? 'overtime' : 'timer'}
+                </div>
+              </button>
+            )}
+          </div>
         </div>
 
         <div className="relative mt-5 grid grid-cols-3 gap-2">
@@ -1016,7 +1058,7 @@ function HomePanel({
         </div>
       </section>
 
-      <SaunaTimer />
+      <SaunaTimer timer={timer} />
 
       <section>
         <div className="mb-3 flex items-center justify-between">
