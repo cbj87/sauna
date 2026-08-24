@@ -625,25 +625,29 @@ function SaunaTimer({ timer }) {
 
   return (
     <section id="sauna-timer" className={`overflow-hidden rounded-2xl border transition-colors ${expired ? 'border-red-400/80 bg-red-950/60' : active ? 'border-orange-500/60 bg-black' : 'border-white/10 bg-gray-800/80'}`}>
-      <button onClick={() => !active && setExpanded(v => !v)}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left">
-        <div>
-          <h2 className="text-lg font-black tracking-tight">Timer</h2>
-          <p className={`text-xs ${expired ? 'text-red-200' : 'text-gray-500'}`}>{active ? (paused ? 'Paused' : expired ? 'Timer ended — counting overtime' : 'Screen stays awake while running') : 'Quick sauna session countdown'}</p>
+      {/* Collapsed, this is a single slim row so it costs almost no vertical
+          space above the controls; expanded it carries the full countdown. */}
+      <button onClick={() => setExpanded(v => !v)}
+        className={`flex w-full items-center justify-between gap-3 px-4 text-left ${expanded ? 'py-3' : 'py-2'}`}>
+        <div className="min-w-0">
+          <h2 className={`font-black tracking-tight ${expanded ? 'text-lg' : 'text-sm'}`}>Timer</h2>
+          {expanded && (
+            <p className={`text-xs ${expired ? 'text-red-200' : 'text-gray-500'}`}>{active ? (paused ? 'Paused' : expired ? 'Timer ended — counting overtime' : 'Screen stays awake while running') : 'Quick sauna session countdown'}</p>
+          )}
         </div>
-        <div className="flex items-center gap-3">
-          {active && <span className={`font-mono text-xl font-black ${expired ? 'text-red-200' : 'text-orange-300'}`}>{timeLabel}</span>}
-          {!active && <span className={`text-gray-500 text-xs transition-transform duration-200 inline-block ${expanded ? 'rotate-180' : ''}`}>▾</span>}
+        <div className="flex items-center gap-2">
+          {active && !expanded && <span className={`font-mono text-xl font-black ${expired ? 'text-red-200' : 'text-orange-300'}`}>{timeLabel}</span>}
+          <span className={`text-gray-500 text-xs transition-transform duration-200 inline-block ${expanded ? 'rotate-180' : ''}`}>▾</span>
         </div>
       </button>
 
       {expanded && (
         <div className="border-t border-white/10 px-4 pb-4 pt-3">
           {active ? (
-            <div className="space-y-4">
-              <div className={`rounded-2xl px-4 py-8 text-center ${expired ? 'bg-red-500 text-white' : 'bg-orange-500 text-black'}`}>
-                <div className="font-mono text-7xl font-black leading-none tracking-normal sm:text-8xl">{timeLabel}</div>
-                <div className="mt-2 text-sm font-black uppercase tracking-wide">{paused ? 'paused' : expired ? 'overtime' : 'remaining'}</div>
+            <div className="space-y-3">
+              <div className={`rounded-2xl px-4 py-5 text-center ${expired ? 'bg-red-500 text-white' : 'bg-orange-500 text-black'}`}>
+                <div className="font-mono text-6xl font-black leading-none tracking-normal sm:text-7xl">{timeLabel}</div>
+                <div className="mt-1 text-sm font-black uppercase tracking-wide">{paused ? 'paused' : expired ? 'overtime' : 'remaining'}</div>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <button onClick={() => paused ? resumeTimer() : pauseTimer()}
@@ -916,14 +920,6 @@ function HomePanel({
 
   // Change the target temperature of a running sauna without an off→on cycle.
   // Temp-only /api/sauna/set goes straight through set_state on the device.
-  // Hero countdown is display-only — send taps down to the timer card's controls.
-  function focusTimer() {
-    timer.setExpanded(true);
-    requestAnimationFrame(() => {
-      document.getElementById('sauna-timer')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    });
-  }
-
   async function handleSetTemp() {
     if (midTempF == null) return;
     setBusy(true);
@@ -940,8 +936,8 @@ function HomePanel({
   }
 
   return (
-    <div className="space-y-5">
-      <section className="relative overflow-hidden rounded-[1.75rem] border border-orange-500/20 bg-gradient-to-br from-stone-950 via-gray-900 to-black p-5 shadow-2xl">
+    <div className="space-y-4">
+      <section className="relative overflow-hidden rounded-[1.75rem] border border-orange-500/20 bg-gradient-to-br from-stone-950 via-gray-900 to-black p-4 shadow-2xl">
         <div className="absolute -right-10 -top-14 h-40 w-40 rounded-full bg-orange-500/25 blur-3xl" />
         <div className="relative flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -950,45 +946,30 @@ function HomePanel({
                 : saunaStarting ? 'Sauna is starting…'
                 : startFailure ? 'Sauna did not start' : 'Ready when you are'}
             </p>
-            <div className={`mt-2 font-black leading-none tracking-tight ${timer.active ? 'text-5xl' : 'text-6xl'}`}>
+            <div className="mt-2 text-6xl font-black leading-none tracking-tight">
               {fmtF(currentTempF)}
             </div>
             {heatingToTarget && heatEst && (
               <p className="mt-1 text-sm font-bold text-orange-300">~{heatEst.minutes_to_target} min to {fmtF(targetTempF)}</p>
             )}
-            <p className="mt-2 text-sm text-gray-400">{updatedLabel}{timer.active ? '' : ' · tap refresh for live status'}</p>
+            <p className="mt-2 text-sm text-gray-400">{updatedLabel} · tap refresh for live status</p>
           </div>
-          <div className="flex shrink-0 flex-col items-end gap-2">
-            <button onClick={onRefresh} disabled={busy}
-              className="rounded-2xl bg-white/10 px-3 py-2 text-xs font-bold text-gray-200 hover:bg-white/15 disabled:opacity-50">
-              ↻
-            </button>
-            {/* Live countdown mirrored up here so the timer and the temperature
-                are both readable without scrolling; tap jumps to the controls. */}
-            {timer.active && (
-              <button onClick={focusTimer}
-                className={`min-w-[6.5rem] rounded-2xl border px-3 py-2 text-center transition-colors ${timer.expired ? 'border-red-400/70 bg-red-500/15 hover:bg-red-500/25' : 'border-orange-500/40 bg-orange-500/10 hover:bg-orange-500/20'}`}>
-                <div className={`whitespace-nowrap font-mono text-2xl font-black leading-none ${timer.expired ? 'text-red-200' : 'text-orange-300'}`}>
-                  {timer.timeLabel}
-                </div>
-                <div className="mt-1 text-[10px] font-black uppercase tracking-wide text-gray-400">
-                  {timer.paused ? 'paused' : timer.expired ? 'overtime' : 'timer'}
-                </div>
-              </button>
-            )}
-          </div>
+          <button onClick={onRefresh} disabled={busy}
+            className="shrink-0 rounded-2xl bg-white/10 px-3 py-2 text-xs font-bold text-gray-200 hover:bg-white/15 disabled:opacity-50">
+            ↻
+          </button>
         </div>
 
-        <div className="relative mt-5 grid grid-cols-3 gap-2">
-          <div className="rounded-2xl border border-white/10 bg-black/25 p-3 text-center">
+        <div className="relative mt-4 grid grid-cols-3 gap-2">
+          <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2.5 text-center">
             <div className="text-xl font-black text-white">{fmtF(targetTempF ?? effectiveTempF)}</div>
             <div className="mt-1 text-[11px] font-semibold text-gray-500">Target</div>
           </div>
-          <div className="rounded-2xl border border-white/10 bg-black/25 p-3 text-center">
+          <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2.5 text-center">
             <div className="text-xl font-black text-amber-300">{remaining != null ? `${remaining}m` : `${duration}m`}</div>
             <div className="mt-1 text-[11px] font-semibold text-gray-500">Remaining</div>
           </div>
-          <div className="rounded-2xl border border-white/10 bg-black/25 p-3 text-center">
+          <div className="rounded-2xl border border-white/10 bg-black/25 px-3 py-2.5 text-center">
             <div className="truncate text-xl font-black" style={{color: activeBooking?.member_color || '#fff'}}>
               {activeBooking?.member_name || currentMember?.name || '—'}
             </div>
@@ -1007,9 +988,15 @@ function HomePanel({
               className="rounded-lg px-2 py-1 text-xs font-bold text-red-200/70 hover:bg-white/10">✕</button>
           </div>
         )}
+      </section>
 
+      {/* Timer sits between the temperature and the controls so a running
+          countdown is readable at full size without scrolling past them. */}
+      <SaunaTimer timer={timer} />
+
+      <section className="space-y-3">
         {!saunaOn && !saunaStarting && currentMember?.is_admin && (
-          <div className="relative mt-5 space-y-4 rounded-2xl border border-white/10 bg-black/25 p-4">
+          <div className="space-y-4 rounded-2xl border border-white/10 bg-gray-800/60 p-4">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
                 Target temperature{myMaxTempC ? <span className="ml-1.5 text-orange-400">(max {fmtF(myMaxTempF)})</span> : null}
@@ -1025,7 +1012,7 @@ function HomePanel({
         )}
 
         {saunaOn && currentMember?.is_admin && (
-          <div className="relative mt-5 space-y-3 rounded-2xl border border-white/10 bg-black/25 p-4">
+          <div className="space-y-3 rounded-2xl border border-white/10 bg-gray-800/60 p-4">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">
                 Adjust temperature{myMaxTempC ? <span className="ml-1.5 text-orange-400">(max {fmtF(myMaxTempF)})</span> : null}
@@ -1041,7 +1028,7 @@ function HomePanel({
           </div>
         )}
 
-        <div className="relative mt-5 grid grid-cols-[1fr_auto_auto] gap-2">
+        <div className="grid grid-cols-[1fr_auto_auto] gap-2">
           <button onClick={handlePrimary} disabled={busy}
             className="rounded-2xl bg-orange-500 py-3.5 text-base font-black text-black shadow-xl transition-all hover:bg-orange-400 disabled:opacity-60">
             {busy ? '…' : (saunaOn || saunaStarting) ? 'Turn off' : currentMember?.is_admin ? 'Turn on' : 'Book & start'}
@@ -1057,8 +1044,6 @@ function HomePanel({
           <button onClick={() => onOpenMore?.()} className="rounded-2xl bg-white/10 px-4 py-3 text-sm font-bold text-gray-200 hover:bg-white/15">Settings</button>
         </div>
       </section>
-
-      <SaunaTimer timer={timer} />
 
       <section>
         <div className="mb-3 flex items-center justify-between">
