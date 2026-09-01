@@ -7,6 +7,7 @@ from __future__ import annotations
 import collections
 import json
 import logging
+import math
 import os
 import secrets
 import threading
@@ -2267,28 +2268,32 @@ def _status_with_start_failure(status: dict) -> dict:
     return out
 
 
-# Heating-rate model (deliberately simple): median °C/min across recent heating
-# segments from the DeviceStateLog timeseries, bucketed by outdoor temperature.
+# Heating-rate model (two-phase).  The heater runs flat out at a near-constant
+# °C/min until it closes to within _TAIL_ZONE_C of the setpoint, then the
+# controller starts cycling and the last few degrees crawl.  Telemetry backs
+# this up: instantaneous rate sits at ~2 °C/min for every gap band above 10 °C
+# and collapses to ~0 below it, and the time to cover that final zone is
+# near-constant (~7 min) regardless of how high the target is.  So we fit two
+# numbers from DeviceStateLog — the linear-phase rate and the tail duration —
+# rather than one slope across the whole curve.
 _HEAT_RATE_CACHE_TTL = 600.0
 _heat_rate_lock = threading.Lock()
-_heat_rate_cache: dict = {"ts": 0.0, "buckets": {}, "fallback": None}
+_heat_rate_cache: dict = {"ts": 0.0, "model": None}
 
 # Segment extraction thresholds
 _SEGMENT_GAP_SECONDS = 180       # rows further apart than this start a new segment
 _SEGMENT_MIN_MINUTES = 5.0
 _SEGMENT_MIN_DELTA_C = 5.0
-_NEAR_TARGET_MARGIN_C = 3        # drop the asymptotic tail near target
-_ESTIMATE_SAFETY_FACTOR = 1.1
+_TAIL_ZONE_C = 10                # within this of target, the approach is no longer linear
+_MIN_SEGMENT_POINTS = 6          # linear phase needs enough rows to be a real ramp
+_MIN_MODEL_SAMPLES = 3
+_ESTIMATE_FLOOR_MINUTES = 3      # never promise sooner than the observed floor
 
-
-def _outdoor_bucket(outdoor: float | None) -> str | None:
-    if outdoor is None:
-        return None
-    if outdoor < 5:
-        return "cold"
-    if outdoor <= 15:
-        return "mild"
-    return "warm"
+# Fallbacks for a cold install with no telemetry yet.  Only used to fill in one
+# half of the model when the other half has samples; with no samples at all the
+# estimate stays None and the UI shows nothing.
+_DEFAULT_RATE_C_PER_MIN = 1.9
+_DEFAULT_TAIL_MINUTES = 7.0
 
 
 def _median(values: list[float]) -> float:
@@ -2298,12 +2303,73 @@ def _median(values: list[float]) -> float:
     return values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2
 
 
-def _compute_heating_rate(db, outdoor_temp: float | None) -> dict | None:
-    """Median heating rate (°C/min) from the last 30 days of telemetry.
+def _split_heating_segments(rows: list) -> list[list]:
+    """Group telemetry rows into contiguous runs of an active heating session."""
+    segments: list[list] = []
+    current: list = []
+    prev_ts = None
+    for r in rows:
+        gap = (r.ts - prev_ts).total_seconds() if prev_ts else 0
+        prev_ts = r.ts
+        if not r.active or gap > _SEGMENT_GAP_SECONDS:
+            if current:
+                segments.append(current)
+                current = []
+            continue
+        current.append(r)
+    if current:
+        segments.append(current)
+    return segments
 
-    Prefers segments from the caller's outdoor-temp bucket when it has enough
-    samples; falls back to the all-data median. None when there isn't enough
-    history yet.
+
+def _segment_linear_rate(seg: list) -> float | None:
+    """°C/min over the full-power ramp — the run *before* the first approach to target.
+
+    Takes a contiguous prefix and stops at the first crossing into the tail zone.
+    Filtering point-by-point instead would let a late dip below the threshold
+    (temperature oscillates around the setpoint for the rest of the session)
+    stretch the window across the whole plateau and halve the apparent rate.
+    """
+    pts = []
+    for p in seg:
+        if p.temperature is None or p.target_temp is None:
+            continue
+        if p.temperature >= p.target_temp - _TAIL_ZONE_C:
+            break
+        pts.append(p)
+    if len(pts) < _MIN_SEGMENT_POINTS:
+        return None
+    minutes = (pts[-1].ts - pts[0].ts).total_seconds() / 60
+    delta = pts[-1].temperature - pts[0].temperature
+    if minutes < _SEGMENT_MIN_MINUTES or delta < _SEGMENT_MIN_DELTA_C:
+        return None
+    return delta / minutes
+
+
+def _segment_tail_minutes(seg: list) -> float | None:
+    """Minutes from entering the tail zone to actually reaching target."""
+    hit = next(
+        (p for p in seg
+         if p.temperature is not None and p.target_temp is not None
+         and p.temperature >= p.target_temp),
+        None,
+    )
+    if hit is None:
+        return None
+    cross = next(
+        (p for p in seg
+         if p.temperature is not None and p.temperature >= hit.target_temp - _TAIL_ZONE_C),
+        None,
+    )
+    if cross is None or cross.ts >= hit.ts:
+        return None
+    return (hit.ts - cross.ts).total_seconds() / 60
+
+
+def _compute_heating_model(db) -> dict | None:
+    """Fit (linear rate, tail duration) from the last 30 days of telemetry.
+
+    None until there's enough history to fit at least one of the two halves.
     """
     now = _time.time()
     with _heat_rate_lock:
@@ -2314,62 +2380,43 @@ def _compute_heating_rate(db, outdoor_temp: float | None) -> dict | None:
                 .order_by(DeviceStateLog.ts)
                 .all()
             )
-            # Split into heating segments: a gap or an inactive row ends the segment.
-            segments: list[list[DeviceStateLog]] = []
-            current: list[DeviceStateLog] = []
-            prev_ts = None
-            for r in rows:
-                gap = (r.ts - prev_ts).total_seconds() if prev_ts else 0
-                prev_ts = r.ts
-                if not r.active or gap > _SEGMENT_GAP_SECONDS:
-                    if current:
-                        segments.append(current)
-                        current = []
-                    continue
-                current.append(r)
-            if current:
-                segments.append(current)
+            rates: list[float] = []
+            tails: list[float] = []
+            for seg in _split_heating_segments(rows):
+                rate = _segment_linear_rate(seg)
+                if rate is not None:
+                    rates.append(rate)
+                tail = _segment_tail_minutes(seg)
+                if tail is not None:
+                    tails.append(tail)
 
-            rates: list[tuple[float, str | None]] = []  # (°C/min, outdoor bucket)
-            for seg in segments:
-                # Keep the rise portion below the asymptotic zone near target.
-                pts = [
-                    p for p in seg
-                    if p.temperature is not None and p.target_temp is not None
-                    and p.temperature < p.target_temp - _NEAR_TARGET_MARGIN_C
-                ]
-                if len(pts) < 2:
-                    continue
-                first, last = pts[0], pts[-1]
-                minutes = (last.ts - first.ts).total_seconds() / 60
-                delta = last.temperature - first.temperature
-                if minutes < _SEGMENT_MIN_MINUTES or delta < _SEGMENT_MIN_DELTA_C:
-                    continue
-                outdoors = [p.outdoor_temp for p in pts if p.outdoor_temp is not None]
-                bucket = _outdoor_bucket(sum(outdoors) / len(outdoors) if outdoors else None)
-                rates.append((delta / minutes, bucket))
-
-            buckets: dict[str, list[float]] = {}
-            for rate, bucket in rates:
-                if bucket:
-                    buckets.setdefault(bucket, []).append(rate)
-            _heat_rate_cache["buckets"] = {
-                b: {"rate": _median(v), "samples": len(v)} for b, v in buckets.items()
-            }
-            _heat_rate_cache["fallback"] = (
-                {"rate": _median([r for r, _ in rates]), "samples": len(rates)}
-                if len(rates) >= 3 else None
-            )
+            model = None
+            if len(rates) >= _MIN_MODEL_SAMPLES or len(tails) >= _MIN_MODEL_SAMPLES:
+                model = {
+                    "rate_c_per_min": _median(rates) if len(rates) >= _MIN_MODEL_SAMPLES
+                                      else _DEFAULT_RATE_C_PER_MIN,
+                    "tail_minutes": _median(tails) if len(tails) >= _MIN_MODEL_SAMPLES
+                                    else _DEFAULT_TAIL_MINUTES,
+                    "samples": max(len(rates), len(tails)),
+                }
+            _heat_rate_cache["model"] = model
             _heat_rate_cache["ts"] = now
 
-        wanted = _outdoor_bucket(outdoor_temp)
-        bucketed = _heat_rate_cache["buckets"].get(wanted) if wanted else None
-        if bucketed and bucketed["samples"] >= 3:
-            return {"rate_c_per_min": bucketed["rate"], "samples": bucketed["samples"], "bucket": wanted}
-        fallback = _heat_rate_cache["fallback"]
-        if fallback:
-            return {"rate_c_per_min": fallback["rate"], "samples": fallback["samples"], "bucket": None}
-        return None
+        return _heat_rate_cache["model"]
+
+
+def _estimate_minutes_to_target(gap_c: float, model: dict) -> int:
+    """Minutes to close `gap_c` °C: linear ramp, then the sub-linear approach.
+
+    The tail is sqrt-shaped rather than linear because the final degrees flatten
+    out — at a 1 °C gap the observed median is still ~2 min, where a straight
+    line would claim well under one.  Floored for the same reason.
+    """
+    if gap_c <= 0:
+        return 0
+    ramp = max(0.0, gap_c - _TAIL_ZONE_C) / model["rate_c_per_min"]
+    tail = model["tail_minutes"] * math.sqrt(min(gap_c, _TAIL_ZONE_C) / _TAIL_ZONE_C)
+    return max(_ESTIMATE_FLOOR_MINUTES, round(ramp + tail))
 
 
 @app.route("/api/sauna/heat-estimate")
@@ -2397,20 +2444,20 @@ def sauna_heat_estimate():
             current_temp = status.get("temperature")
 
         outdoor = _get_outdoor_temp()
-        rate_info = _compute_heating_rate(db, outdoor)
+        model = _compute_heating_model(db)
 
         minutes = None
-        if rate_info and current_temp is not None:
-            remaining_c = max(0, target - current_temp)
-            minutes = round(remaining_c / rate_info["rate_c_per_min"] * _ESTIMATE_SAFETY_FACTOR)
+        if model and current_temp is not None:
+            minutes = _estimate_minutes_to_target(target - current_temp, model)
 
         return jsonify({
             "minutes_to_target": minutes,
-            "rate_c_per_min": round(rate_info["rate_c_per_min"], 2) if rate_info else None,
+            "rate_c_per_min": round(model["rate_c_per_min"], 2) if model else None,
+            "tail_minutes": round(model["tail_minutes"], 1) if model else None,
             "current_temp": current_temp,
             "target_temp": target,
             "outdoor_temp": outdoor,
-            "samples": rate_info["samples"] if rate_info else 0,
+            "samples": model["samples"] if model else 0,
         })
     finally:
         db.close()
