@@ -349,6 +349,9 @@ class DeviceStateLog(Base):
     heat_on = Column(Integer, nullable=True)         # heating element actually drawing
     remaining_time = Column(Integer, nullable=True)  # minutes
     outdoor_temp = Column(Float, nullable=True)      # °C from Open-Meteo
+    wifi_rssi = Column(Integer, nullable=True)       # dBm; heater's link to the AP
+    sw_ver = Column(String, nullable=True)           # heater firmware, tracks OTA updates
+    stalled = Column(Integer, nullable=True)         # 1 = remaining_time didn't advance (see log_device_state)
 
     def to_dict(self) -> dict:
         return {
@@ -360,6 +363,9 @@ class DeviceStateLog(Base):
             "heat_on": self.heat_on,
             "remaining_time": self.remaining_time,
             "outdoor_temp": self.outdoor_temp,
+            "wifi_rssi": self.wifi_rssi,
+            "sw_ver": self.sw_ver,
+            "stalled": self.stalled,
         }
 
 
@@ -376,6 +382,9 @@ def _migrate_db():
         "ALTER TABLE family_members ADD COLUMN live_activity_all_sessions INTEGER DEFAULT 0",
         "ALTER TABLE native_devices ADD COLUMN apns_environment TEXT DEFAULT 'production'",
         "ALTER TABLE bookings ADD COLUMN share_token TEXT",
+        "ALTER TABLE device_state_log ADD COLUMN wifi_rssi INTEGER",
+        "ALTER TABLE device_state_log ADD COLUMN sw_ver TEXT",
+        "ALTER TABLE device_state_log ADD COLUMN stalled INTEGER",
     ]
     with engine.connect() as conn:
         for stmt in migrations:

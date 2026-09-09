@@ -1475,6 +1475,8 @@ def refresh_harvia_token():
 _device_state_lock = threading.Lock()
 _last_device_active: int | None = None  # last polled `active` value
 _last_app_off_ts: float = 0.0           # monotonic ts of last app-initiated turn_off
+_last_remaining_time: int | None = None # last polled `remainingTime`, for the stall detector
+_stall_polls: int = 0                   # consecutive polls where remainingTime didn't advance
 
 # Shared cache of the most recent full Harvia status, populated by the 60s
 # device-state job (which polls Harvia unconditionally).  Lets read-only clients
@@ -1540,7 +1542,7 @@ def _get_outdoor_temp() -> float | None:
     return float(temp)
 
 
-def _record_device_state(s: dict, active: int) -> None:
+def _record_device_state(s: dict, active: int, stalled: int | None = None) -> None:
     """Persist one telemetry row for the preheat-estimate timeseries."""
     db = SessionLocal()
     try:
@@ -1552,6 +1554,9 @@ def _record_device_state(s: dict, active: int) -> None:
             heat_on=1 if s.get("heatOn") else 0,
             remaining_time=s.get("remainingTime"),
             outdoor_temp=_get_outdoor_temp(),
+            wifi_rssi=s.get("wifiRSSI"),
+            sw_ver=s.get("swVer"),
+            stalled=stalled,
         ))
         db.commit()
     except Exception as exc:
@@ -1559,6 +1564,57 @@ def _record_device_state(s: dict, active: int) -> None:
         db.rollback()
     finally:
         db.close()
+
+
+def _track_remaining_time(s: dict, active: int, prev: int | None) -> int | None:
+    """Detect the heater dropping off Harvia's cloud, and return the stall flag.
+
+    While a session runs, `remainingTime` decrements by exactly 1 per 60s poll.
+    When the heater loses its cloud link it stops reporting and we keep reading
+    the same stale shadow value (delta 0); when it reconnects the shadow catches
+    up in a single jump (delta > 1).  Harvia's backend re-fires the session-start
+    sequence on that reconnect, which is what reaches phones as a spurious
+    "Sauna heating" + "Sauna ready" pair in the same minute — the heater never
+    actually restarted.  A genuine restart restages the timer, so `remainingTime`
+    would jump *up* instead (delta < 0), which is why that case only resets state.
+
+    Only meaningful mid-session: the start and the shutoff both move the timer
+    legitimately.
+    """
+    global _last_remaining_time, _stall_polls
+
+    rem = s.get("remainingTime")
+    prev_rem = _last_remaining_time
+    _last_remaining_time = rem
+
+    if active != 1 or prev != 1 or rem is None or prev_rem is None:
+        _stall_polls = 0
+        return None
+
+    delta = prev_rem - rem
+    if delta == 0:
+        _stall_polls += 1
+        logger.info(
+            "device tick: STALL — remainingTime stuck at %s for %d poll(s); "
+            "the heater is not reaching Harvia's cloud (wifiRSSI=%s)",
+            rem, _stall_polls, s.get("wifiRSSI"),
+        )
+        return 1
+    if delta > 1:
+        stalled_for = _stall_polls
+        _stall_polls = 0
+        logger.warning(
+            "device tick: CLOUD DROPOUT — remainingTime jumped %s→%s (+%d) after %d stalled poll(s). "
+            "The heater reconnected; expect a spurious MyHarvia 'Sauna heating'/'Sauna ready' pair now. "
+            "wifiRSSI=%s swVer=%s temp=%s targetTemp=%s",
+            prev_rem, rem, delta, stalled_for,
+            s.get("wifiRSSI"), s.get("swVer"), s.get("temperature"), s.get("targetTemp"),
+        )
+        return 0
+
+    # delta == 1 (normal) or delta < 0 (timer restaged by an extend/set).
+    _stall_polls = 0
+    return 0
 
 
 def log_device_state():
@@ -1575,20 +1631,22 @@ def log_device_state():
 
     active = s.get("active") or 0
     prev = _last_device_active
+    stalled = _track_remaining_time(s, active, prev)
 
     # Persist telemetry while heating, plus one trailing row on the 1→0
     # transition so heating segments terminate cleanly in the timeseries.
     if active == 1 or prev == 1:
-        _record_device_state(s, active)
+        _record_device_state(s, active, stalled)
 
     if active == 1:
         logger.info(
             "device tick: active=1 onTime=%s maxOnTime=%s remainingTime=%s "
-            "targetTemp=%s temp=%s heatOn=%s doorSafety=%s statusCodes=%s errorCodes=%s online=%s",
+            "targetTemp=%s temp=%s heatOn=%s doorSafety=%s statusCodes=%s errorCodes=%s online=%s "
+            "wifiRSSI=%s swVer=%s",
             s.get("onTime"), s.get("maxOnTime"), s.get("remainingTime"),
             s.get("targetTemp"), s.get("temperature"), s.get("heatOn"),
             s.get("doorSafetyState"), s.get("statusCodes"), s.get("errorCodes"),
-            s.get("online"),
+            s.get("online"), s.get("wifiRSSI"), s.get("swVer"),
         )
 
     if prev == 1 and active == 0 and s.get("online"):
@@ -1602,11 +1660,12 @@ def log_device_state():
             logger.warning(
                 "device tick: SELF-SHUTOFF — active 1→0 with no recent app off. "
                 "onTime=%s maxOnTime=%s remainingTime=%s targetTemp=%s temp=%s "
-                "heatOn=%s doorSafety=%s statusCodes=%s errorCodes=%s online=%s",
+                "heatOn=%s doorSafety=%s statusCodes=%s errorCodes=%s online=%s "
+                "wifiRSSI=%s swVer=%s",
                 s.get("onTime"), s.get("maxOnTime"), s.get("remainingTime"),
                 s.get("targetTemp"), s.get("temperature"), s.get("heatOn"),
                 s.get("doorSafetyState"), s.get("statusCodes"), s.get("errorCodes"),
-                s.get("online"),
+                s.get("online"), s.get("wifiRSSI"), s.get("swVer"),
             )
 
     with _device_state_lock:

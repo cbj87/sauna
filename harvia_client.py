@@ -453,6 +453,7 @@ class HarviaClient:
             "displayName": reported.get("displayName"),
             "statusCodes": reported.get("statusCodes"),
             "errorCodes": reported.get("errorCodes"),
+            "swVer": reported.get("swVer"),
             # live telemetry
             "temperature": telemetry.get("temperature"),
             "humidity": telemetry.get("humidity"),
