@@ -1279,7 +1279,7 @@ function SettingsSections({ currentMember, members, presets, pendingCount, onRel
   const sections = [
     { id: 'family', label: 'Family', detail: `${members.length} approved member${members.length === 1 ? '' : 's'}` },
     ...(currentMember?.is_admin ? [
-      { id: 'admin', label: 'Admin', detail: pendingCount ? `${pendingCount} pending approval${pendingCount === 1 ? '' : 's'}` : 'Members and presets' },
+      { id: 'admin', label: 'Admin', detail: pendingCount ? `${pendingCount} pending approval${pendingCount === 1 ? '' : 's'}` : 'Members and access' },
       { id: 'logs', label: 'Logs', detail: 'Control log and database tools' },
     ] : []),
   ];
@@ -1288,7 +1288,7 @@ function SettingsSections({ currentMember, members, presets, pendingCount, onRel
     <div className="space-y-5">
       <div>
         <h2 className="text-xl font-black tracking-tight">Management</h2>
-        <p className="text-sm text-gray-500">Family, presets, and maintenance tools</p>
+        <p className="text-sm text-gray-500">Family and maintenance tools</p>
       </div>
       <div className="grid gap-2">
         {sections.map(s => (
@@ -1405,7 +1405,7 @@ function SettingsPanel({
         <button onClick={onShowHelp} className="flex w-full items-center justify-between px-4 py-4 text-left">
           <div>
             <div className="text-sm font-semibold text-white">FAQ</div>
-            <div className="mt-0.5 text-xs text-gray-500">Booking, controls, presets, and admin notes</div>
+            <div className="mt-0.5 text-xs text-gray-500">Booking, controls, and admin notes</div>
           </div>
           <span className="text-gray-500">›</span>
         </button>
@@ -1448,20 +1448,12 @@ function HelpModal({ onClose }) {
       a: 'Controls unlock when you own or join an active session, or one starting within the next 90 minutes. Outside that window the controls are locked. You can also trigger preheat from a booking card once you\'re within the 90-minute window.',
     },
     {
-      q: 'What are presets?',
-      a: 'Presets are quick-start shortcuts — each one has a name, a target temperature, and a duration. Tap one to instantly apply those settings without adjusting sliders manually.',
-    },
-    {
-      q: 'How do I add or edit presets?',
-      a: 'Presets can be added, edited, or deleted from Management in Settings. Only admins can manage presets.',
-    },
-    {
       q: 'How do I add a new member?',
       a: 'New members sign up from the login screen. They\'ll show as pending until an admin approves them from Management in Settings. Each member gets their own colour, default temperature, and default session length.',
     },
     {
       q: 'What can admins do?',
-      a: 'Admins can approve or reject new sign-ups, set a max temperature limit per member, toggle admin rights, manage presets, and access the database browser for direct data edits.',
+      a: 'Admins can approve or reject new sign-ups, set a max temperature limit per member, toggle admin rights, and access the database browser for direct data edits.',
     },
   ];
 
@@ -3676,6 +3668,8 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
         </div>
       </div>
 
+      {/* preset editor — hidden with the quick-start buttons, see PRESETS_ENABLED */}
+      {PRESETS_ENABLED && (
       <div className="bg-gray-800 rounded-2xl p-5">
         <h2 className="font-bold text-base mb-4">Presets</h2>
         <div className="space-y-2">
@@ -3729,6 +3723,7 @@ function AdminPanel({ currentMember, presets = [], onReloadPresets }) {
           ))}
         </div>
       </div>
+      )}
     </div>
   );
 }
