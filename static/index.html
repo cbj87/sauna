@@ -2123,6 +2123,17 @@ function MembersPanel({ members, onReload, currentMember, pendingEditMemberId, o
   );
 }
 
+// Quick-start preset buttons are hidden: /api/sauna/preset is the one start
+// path that never got the two-phase turn-on. It sends onTime and active:1 in a
+// single set_state, which is the "session capped at 60 min" bug the staged
+// turn_on exists to avoid, and it skips assert_online() and the activation
+// check — so it creates a booking and a Live Activity for a start it has not
+// confirmed, with none of the unwind the other paths have. No one had ever
+// pressed one (0 of 173 control-log actions), so hiding the buttons costs
+// nothing. Flip this back on only once apply_preset goes through
+// turn_on_stage() + _activate_sauna_async() like /api/sauna/on does.
+const PRESETS_ENABLED = false;
+
 // ─── controls ────────────────────────────────────────────────────────────────
 function Controls({ status, statusUpdatedAt, bookings, members, presets = [], currentMember, onRefresh, onBook, toast, tempF, setTempF, duration, setDuration, manuallySet, setManuallySet }) {
   const { fmtC, fmtF } = useTempUnit();
@@ -2387,8 +2398,8 @@ function Controls({ status, statusUpdatedAt, bookings, members, presets = [], cu
         <span className={loading ? 'animate-spin' : ''}>↻</span> Refresh Status
       </button>
 
-      {/* presets */}
-      {presets.length > 0 && (
+      {/* presets — see PRESETS_ENABLED */}
+      {PRESETS_ENABLED && presets.length > 0 && (
         <div className="mb-4">
           <div className="text-sm text-gray-400 mb-2">Quick start</div>
           <div className="flex gap-2 flex-wrap">
