@@ -1579,17 +1579,21 @@ def _describe_counter_deltas(before: dict, after: dict) -> str:
         return f"{key} {a}→{b} ({b - a:+d})"
 
     parts = [d("msgId"), d("onOffTrigger"), d("heatOnCounter")]
-    a, b = before.get("msgId"), after.get("msgId")
-    if a is not None and b is not None:
-        parts.append("MODULE REBOOTED" if b < a else "module did not reboot")
-    # onOffTrigger is a state/reason code, not a counter (3 for a whole session
-    # started from the app, 23 once off), and heatOnCounter stayed 0 through a
-    # full session at setpoint — so only a *change* is worth flagging, and it
-    # means "the device re-evaluated its state on reconnect", nothing more.
+    # None of these three is a clean counter, so no verdict is drawn from them:
+    #   msgId carries two interleaved sequences — a high one that steps on
+    #     state changes (~370) and a low one (~50) that shows in the shadow for
+    #     ~3s at the moment of a reconnect, so before/after deltas across a gap
+    #     compare different things;
+    #   onOffTrigger is a state/reason code (3 for a whole app-started session,
+    #     23 once off);
+    #   heatOnCounter stayed 0 through a full session at setpoint.
+    # The raw values are still worth having next to each dropout; the
+    # discriminators that actually work are the stall length (a ~200s
+    # silence = a keepalive-timeout-shaped failure) and the panel's WiFi light.
     for key in ("onOffTrigger", "heatOnCounter"):
         a, b = before.get(key), after.get(key)
         if a is not None and b is not None and a != b:
-            parts.append(f"{key} CHANGED across the gap")
+            parts.append(f"{key} changed across the gap")
     return "; ".join(parts)
 
 
@@ -1608,14 +1612,11 @@ def _track_remaining_time(s: dict, active: int, prev: int | None) -> int | None:
     Only meaningful mid-session: the start and the shutoff both move the timer
     legitimately.
 
-    The dropout warning also reports how three device counters moved across
-    the gap, because that is what splits "what broke" without a Harvia ticket:
-      msgId          resets to ~0 only if the WiFi module rebooted;
-      onOffTrigger   +1 means the device treated the reconnect as a session
-                     restart (which is why MyHarvia says "heating started");
-      heatOnCounter  says whether the heating elements actually cycled.
-    During a stall the polled values are the stale pre-dropout ones, so the
-    previous poll's counters are exactly the pre-gap baseline.
+    The dropout warning also reports how three device fields moved across the
+    gap (msgId, onOffTrigger, heatOnCounter) — see _describe_counter_deltas
+    for why none of them supports a verdict on its own.  During a stall the
+    polled values are the stale pre-dropout ones, so the previous poll's
+    values are exactly the pre-gap baseline.
     """
     global _last_remaining_time, _stall_polls, _last_counters
 
