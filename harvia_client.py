@@ -454,6 +454,9 @@ class HarviaClient:
             "statusCodes": reported.get("statusCodes"),
             "errorCodes": reported.get("errorCodes"),
             "swVer": reported.get("swVer"),
+            # Device-side message counter. Keeps climbing through a cloud dropout;
+            # resets to ~0 only if the WiFi module reboots.
+            "msgId": reported.get("msgId"),
             # live telemetry
             "temperature": telemetry.get("temperature"),
             "humidity": telemetry.get("humidity"),
@@ -462,6 +465,12 @@ class HarviaClient:
             "doorSafetyState": telemetry.get("doorSafetyState"),
             "steamOn": telemetry.get("steamOn"),
             "wifiRSSI": telemetry.get("wifiRSSI"),
+            # Counters: session on/off triggers and element energisations. A
+            # cloud reconnect that bumps onOffTrigger means the device treated
+            # it as a session restart; heatOnCounter says whether the elements
+            # actually cycled.
+            "onOffTrigger": telemetry.get("onOffTrigger"),
+            "heatOnCounter": telemetry.get("heatOnCounter"),
             "lightState": telemetry.get("lightState"),
             "fanState": telemetry.get("fanState"),
             "telemetryTimestamp": telemetry.get("_timestamp"),

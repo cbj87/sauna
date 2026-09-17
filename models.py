@@ -352,6 +352,9 @@ class DeviceStateLog(Base):
     wifi_rssi = Column(Integer, nullable=True)       # dBm; heater's link to the AP
     sw_ver = Column(String, nullable=True)           # heater firmware, tracks OTA updates
     stalled = Column(Integer, nullable=True)         # 1 = remaining_time didn't advance (see log_device_state)
+    msg_id = Column(Integer, nullable=True)          # device message counter; resets only on module reboot
+    on_off_trigger = Column(Integer, nullable=True)  # device session on/off trigger count
+    heat_on_counter = Column(Integer, nullable=True) # heating-element energisation count
 
     def to_dict(self) -> dict:
         return {
@@ -366,6 +369,9 @@ class DeviceStateLog(Base):
             "wifi_rssi": self.wifi_rssi,
             "sw_ver": self.sw_ver,
             "stalled": self.stalled,
+            "msg_id": self.msg_id,
+            "on_off_trigger": self.on_off_trigger,
+            "heat_on_counter": self.heat_on_counter,
         }
 
 
@@ -385,6 +391,9 @@ def _migrate_db():
         "ALTER TABLE device_state_log ADD COLUMN wifi_rssi INTEGER",
         "ALTER TABLE device_state_log ADD COLUMN sw_ver TEXT",
         "ALTER TABLE device_state_log ADD COLUMN stalled INTEGER",
+        "ALTER TABLE device_state_log ADD COLUMN msg_id INTEGER",
+        "ALTER TABLE device_state_log ADD COLUMN on_off_trigger INTEGER",
+        "ALTER TABLE device_state_log ADD COLUMN heat_on_counter INTEGER",
     ]
     with engine.connect() as conn:
         for stmt in migrations:
